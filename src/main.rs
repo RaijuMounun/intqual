@@ -1,53 +1,50 @@
-// Modüllerimizi (Departmanlarımızı) ana dosyaya tanıtıyoruz
 pub mod models;
 pub mod engine;
+pub mod ui;
 
-// Kullanacağımız yapıları içeri aktarıyoruz
-use engine::{NetworkEngine, FallbackEngine};
+use clap::Parser;
+use engine::FallbackEngine;
 use tokio::sync::mpsc;
 
-/// #[tokio::main] makrosu, Rust'ın standart senkron 'main' fonksiyonunu
-/// Asenkron (async) bir çalışma zamanına (runtime) dönüştürür.
-/// Bu sayede 'await' kelimesini kullanabiliriz.
+/// Represents the Command Line Interface arguments.
+/// The 'clap' crate automatically parses terminal arguments into this struct.
+#[derive(Parser, Debug)]
+#[command(author, version, about = "A zero-runtime-dependency asynchronous network analysis engine", long_about = None)]
+struct Cli {
+    /// The target IP address or hostname to analyze
+    #[arg(default_value = "google.com")]
+    target: String,
+
+    /// The target port for TCP handshake measurements
+    #[arg(short, long, default_value_t = 443)]
+    port: u16,
+
+    /// The polling interval in milliseconds
+    #[arg(short, long, default_value_t = 500)]
+    interval: u64,
+
+    /// The connection timeout threshold in milliseconds
+    #[arg(short = 't', long, default_value_t = 1000)]
+    timeout: u64,
+}
+
 #[tokio::main]
-async fn main() {
-    println!("Intqual Ağ Motoru Başlatılıyor...");
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Parse CLI arguments
+    let cli = Cli::parse();
 
-    // 1. İletişim Kanalını Kur (MPSC - Multi-Producer, Single-Consumer)
-    // 100 değeri "Bounded Channel" (Sınırlandırılmış Kanal) kapasitesidir.
-    // Eğer UI thread'i çökerse ve okumayı bırakırsa, RAM şişmesin diye kanal 100 pakette tıkanır. (Backpressure)
-    let (tx, mut rx) = mpsc::channel(100);
+    // 2. Establish the MPSC channel (Bounded for backpressure handling)
+    let (tx, rx) = mpsc::channel(100);
 
-    // 2. Hedefi Belirle (Şimdilik hardcoded, ileride CLI argümanından gelecek)
-    let target = "google.com".to_string();
+    // 3. Instantiate the engine with injected configurations
+    let fallback_engine = FallbackEngine::new(cli.target, cli.port, cli.interval, cli.timeout);
 
-    // 3. Fallback Motorunu Örnekle (Instantiate)
-    let fallback_engine = FallbackEngine::new(target);
-
-    // 4. Motoru Başlat ve vericiyi (tx) içine enjekte et
+    // 4. Ignite the async engine in the background (Fire and Forget)
     fallback_engine.start(tx).await;
 
-    println!("Motor çalışıyor, veriler bekleniyor...\n");
+    // 5. Transfer the main thread to the UI event loop.
+    // This function is blocking and consumes metrics from the receiver.
+    ui::run_app(rx)?;
 
-    // 5. Aptal UI (Dumb UI) Simülasyonu - Ana Döngü
-    // 'rx.recv().await' kanalda veri yoksa CPU'yu yormadan uyur, veri gelince uyanır.
-    while let Some(metrics) = rx.recv().await {
-        
-        // Veriyi terminale jilet gibi basıyoruz
-        println!("Hedef IP  : {}", metrics.target_ip);
-        println!("Zaman     : {}", metrics.timestamp);
-        
-        // Pattern Matching (Desen Eşleştirme) ile TCP sonucunu güvenle okuyoruz
-        match metrics.tcp_ping {
-            Ok(ms) => println!("TCP Ping  : {:.2} ms 🟢", ms),
-            Err(e) => println!("TCP Ping  : {} 🔴", e),
-        }
-
-        match metrics.icmp_ping {
-            Ok(ms) => println!("ICMP Ping : {:.2} ms 🟢", ms),
-            Err(e) => println!("ICMP Ping : {} 🟡\n", e),
-        }
-        
-        println!("-----------------------------------");
-    }
+    Ok(())
 }

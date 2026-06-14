@@ -2,6 +2,9 @@
 /// This struct is completely decoupled from the engine logic and UI.
 #[derive(Debug)]
 pub struct NetworkMetrics {
+    /// Incremental ID of the measurement tick (solves out-of-order delivery)
+    pub sequence_number: u64,
+
     /// The IP address or hostname being monitored (e.g., "8.8.8.8").
     pub target_ip: String,
     

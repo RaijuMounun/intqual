@@ -13,3 +13,5 @@ pub trait NetworkEngine {
     /// * `tx` - The transmission half of an MPSC channel used to push metrics to the consumer (UI).
     fn start(&self, tx: mpsc::Sender<NetworkMetrics>);
 }
+
+pub use fallback::FallbackEngine;
