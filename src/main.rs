@@ -1,5 +1,6 @@
 pub mod models;
 pub mod engine;
+pub mod network;
 pub mod ui;
 
 use clap::Parser;
