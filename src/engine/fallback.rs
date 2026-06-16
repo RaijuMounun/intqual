@@ -1,73 +1,166 @@
+use std::mem::MaybeUninit; // FIXED: Imported MaybeUninit for uninitialized memory buffers
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+use socket2::{Domain, Protocol, Socket, Type};
 use crate::models::NetworkMetrics;
+use crate::network::icmp::{IcmpEchoRequest, IcmpEchoReply};
 
-/// TODO: Make comments english and professional
-/// FallbackEngine: Sudo gerektirmeyen, standart işletim sistemi yetenekleriyle ağ ölçümü yapar.
+/// The `FallbackEngine` is responsible for measuring network latency without requiring elevated privileges.
+/// It utilizes a concurrent dual-probing strategy (TCP Handshake and Unprivileged ICMP Datagrams)
+/// to ensure high observability even in restricted OS environments.
 pub struct FallbackEngine {
-    pub target_ip: String,
+    /// Shared reference to the target IP to avoid unnecessary cloning across spawned micro-tasks.
+    pub target_ip: Arc<String>,
     pub target_port: u16,
     pub interval: Duration,
+    pub timeout: Duration,
 }
 
 impl FallbackEngine {
-    /// Yeni bir FallbackEngine örneği oluşturur (Constructor)
-    pub fn new(target_ip: String) -> Self {
+    /// Instantiates a new `FallbackEngine` with injected configuration parameters.
+    pub fn new(target_ip: String, target_port: u16, interval_ms: u64, timeout_ms: u64) -> Self {
         Self {
-            target_ip,
-            target_port: 443, // Varsayılan olarak HTTPS (443) portuna vuruyoruz.
-            interval: Duration::from_millis(500), // Tatlı nokta: 500ms
+            target_ip: Arc::new(target_ip),
+            target_port,
+            interval: Duration::from_millis(interval_ms),
+            timeout: Duration::from_millis(timeout_ms),
         }
     }
 
-    /// Motoru asenkron (async) olarak başlatır ve kanala veri pompalar.
+    /// Ignites the asynchronous measurement engine.
+    /// This method resolves DNS upfront (Pre-flight) to ensure metric purity,
+    /// preventing DNS resolution latency from polluting TCP handshake measurements.
     pub async fn start(self, tx: mpsc::Sender<NetworkMetrics>) {
-        // tokio::spawn, bu sonsuz döngüyü arka planda bağımsız bir Worker Thread gibi çalıştırır.
-        tokio::spawn(async move {
-            loop {
-                // 1. ADIM: TCP Ping (El Sıkışma Süresi Ölçümü)
-                let start_time = Instant::now(); // Kronometreyi başlat
-                
-                // Fail-Fast Mimarisi: Hedef yanıt vermezse 30 saniye beklememek için 1 saniyelik "Timeout" koyuyoruz.
-                let tcp_ping_result = match tokio::time::timeout(
-                    Duration::from_millis(1000), 
-                    TcpStream::connect((self.target_ip.as_str(), self.target_port))
-                ).await {
-                    // Bağlantı başarılı olduysa geçen süreyi milisaniye (f64) olarak al.
-                    Ok(Ok(_stream)) => Ok(start_time.elapsed().as_secs_f64() * 1000.0),
-                    // Soket hatası (Örn: Ağ kablosu çekik veya port kapalı)
-                    Ok(Err(e)) => Err(format!("Soket Hatası: {}", e)),
-                    // 1 Saniye doldu, hedef hiç cevap vermedi.
-                    Err(_) => Err("TCP Zaman Aşımı (Timeout)".to_string()),
-                };
-
-                // 2. ADIM: Unprivileged ICMP (Şimdilik yer tutucu/Mock)
-                // İleride buraya ICMP kütüphanesi entegre edilecek.
-                let icmp_ping_result = Err("Unprivileged ICMP yakında eklenecek".to_string());
-
-                // 3. ADIM: Veriyi Pakete Koy (Data Pipeline)
-                let timestamp = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or(Duration::from_secs(0))
-                    .as_secs();
-
-                let metrics = NetworkMetrics {
-                    target_ip: self.target_ip.clone(),
-                    icmp_ping: icmp_ping_result,
-                    tcp_ping: tcp_ping_result,
-                    timestamp,
-                };
-
-                // 4. ADIM: Paketi UI'a fırlat. 
-                // Eğer rx (alıcı/UI) kapanmışsa (kullanıcı programdan çıkmışsa), döngüyü kır ve motoru kapat.
-                if tx.send(metrics).await.is_err() {
-                    break; 
+        let addr_string = format!("{}:{}", self.target_ip, self.target_port);
+        
+        // 1. Pre-flight DNS Resolution
+        let resolved_addr: SocketAddr = match tokio::net::lookup_host(&addr_string).await {
+            Ok(mut addrs) => {
+                if let Some(addr) = addrs.next() {
+                    addr
+                } else {
+                    eprintln!("Fatal Error: DNS returned no addresses for {}", self.target_ip);
+                    return;
                 }
+            },
+            Err(e) => {
+                eprintln!("Fatal Error: DNS Resolution Failed: {}", e);
+                return;
+            }
+        };
 
-                // 5. ADIM: Uyku (CPU'yu %100 kullanmamak için belirlediğimiz aralık kadar bekle)
-                tokio::time::sleep(self.interval).await;
+        // Generate a stateless, pseudo-random identifier for ICMP packets based on the system clock.
+        let icmp_identifier = (SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::default())
+            .subsec_nanos() % 65535) as u16;
+
+        // 2. Main Metronome Loop (Background Worker)
+        tokio::spawn(async move {
+            let mut sequence_counter: u64 = 0;
+            let mut interval_timer = tokio::time::interval(self.interval);
+
+            loop {
+                // Wait for the exact interval tick
+                interval_timer.tick().await;
+                sequence_counter += 1;
+
+                // Prepare state for the isolated micro-task
+                let current_seq = sequence_counter;
+                let target_ip_clone = Arc::clone(&self.target_ip);
+                let timeout_duration = self.timeout;
+                let tx_clone = tx.clone();
+                let target_addr = resolved_addr;
+                
+                let icmp_seq = (current_seq % 65535) as u16;
+
+                // SPAWN: Isolate each tick into its own concurrent task to prevent Head-of-Line blocking.
+                tokio::spawn(async move {
+                    let start_time = Instant::now();
+                    
+                    // --- SUB-TASK A: Asynchronous TCP Handshake Probe ---
+                    let tcp_ping_result = match tokio::time::timeout(
+                        timeout_duration, 
+                        TcpStream::connect(target_addr)
+                    ).await {
+                        Ok(Ok(_stream)) => Ok(start_time.elapsed().as_secs_f64() * 1000.0),
+                        Ok(Err(e)) => Err(format!("Socket Error: {}", e)),
+                        Err(_) => Err("TCP Timeout".to_string()),
+                    };
+
+                    // --- SUB-TASK B: Synchronous OS-level ICMP Probe ---
+                    let icmp_target = target_addr;
+                    // Offload blocking syscalls to Tokio's specialized blocking thread pool
+                    // to prevent stalling the main async reactor.
+                    let icmp_ping_result = tokio::task::spawn_blocking(move || {
+                        let icmp_start = Instant::now();
+                        
+                        // Attempt to open an unprivileged datagram socket (macOS/Linux compatible)
+                        let socket = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4)) {
+                            Ok(s) => s,
+                            Err(_) => return Err("Permission Denied / Unsupported".to_string()),
+                        };
+
+                        let _ = socket.set_read_timeout(Some(timeout_duration));
+                        let _ = socket.set_write_timeout(Some(timeout_duration));
+
+                        let packet = IcmpEchoRequest::new(icmp_identifier, icmp_seq, vec![]);
+                        let packet_bytes = packet.encode();
+
+                        if socket.send_to(&packet_bytes, &icmp_target.into()).is_err() {
+                            return Err("Send Failed".to_string());
+                        }
+
+                        // Utilize uninitialized memory for zero-cost receive buffering
+                        let mut buf = [MaybeUninit::uninit(); 128];
+                        // SMART POLLING LOOP: Ignore alien packets, wait for OUR reply.
+                        loop {
+                            match socket.recv_from(&mut buf) {
+                                Ok((size, _)) => {
+                                    // Safely reconstruct the byte slice from the raw pointer and size
+                                    let initialized_buf = unsafe {
+                                        std::slice::from_raw_parts(buf.as_ptr() as *const u8, size)
+                                    };
+
+                                    // Validate the packet
+                                    if let Ok(reply) = IcmpEchoReply::decode(initialized_buf) {
+                                        // Identity Check: Is this our packet?
+                                        if reply.identifier == icmp_identifier && reply.sequence_number == icmp_seq {
+                                            return Ok(icmp_start.elapsed().as_secs_f64() * 1000.0);
+                                        }
+                                    }
+
+                                    // If we received an alien packet, check if we still have time left to wait
+                                    if icmp_start.elapsed() > timeout_duration {
+                                        return Err("ICMP Timeout".to_string());
+                                    }
+                                },
+                                Err(_) => return Err("ICMP Timeout".to_string()), // OS Timeout triggered
+                            }
+                        }
+                    }).await.unwrap_or_else(|_| Err("Thread Panicked".to_string()));
+
+                    // --- PIPELINE AGGREGATION ---
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or(Duration::from_secs(0))
+                        .as_secs();
+
+                    let metrics = NetworkMetrics {
+                        sequence_number: current_seq,
+                        target_ip: target_ip_clone.to_string(),
+                        icmp_ping: icmp_ping_result,
+                        tcp_ping: tcp_ping_result,
+                        timestamp,
+                    };
+
+                    // Dispatch to the UI consumer. Silently drop if receiver is closed.
+                    let _ = tx_clone.send(metrics).await;
+                });
             }
         });
     }
