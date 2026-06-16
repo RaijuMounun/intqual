@@ -128,8 +128,7 @@ impl FallbackEngine {
 
                                     // Validate the packet
                                     if let Ok(reply) = IcmpEchoReply::decode(initialized_buf) {
-                                        // Identity Check: Is this our packet?
-                                        if reply.identifier == icmp_identifier && reply.sequence_number == icmp_seq {
+                                        if reply.sequence_number == icmp_seq {
                                             return Ok(icmp_start.elapsed().as_secs_f64() * 1000.0);
                                         }
                                     }
