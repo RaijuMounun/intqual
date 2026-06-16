@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use socket2::{Domain, Protocol, Socket, Type};
 use crate::models::NetworkMetrics;
-use crate::network::icmp::IcmpEchoRequest;
+use crate::network::icmp::{IcmpEchoRequest, IcmpEchoReply};
 
 /// The `FallbackEngine` is responsible for measuring network latency without requiring elevated privileges.
 /// It utilizes a concurrent dual-probing strategy (TCP Handshake and Unprivileged ICMP Datagrams)
@@ -117,9 +117,30 @@ impl FallbackEngine {
 
                         // Utilize uninitialized memory for zero-cost receive buffering
                         let mut buf = [MaybeUninit::uninit(); 128];
-                        match socket.recv_from(&mut buf) {
-                            Ok(_) => Ok(icmp_start.elapsed().as_secs_f64() * 1000.0),
-                            Err(_) => Err("ICMP Timeout".to_string()),
+                        // SMART POLLING LOOP: Ignore alien packets, wait for OUR reply.
+                        loop {
+                            match socket.recv_from(&mut buf) {
+                                Ok((size, _)) => {
+                                    // Safely reconstruct the byte slice from the raw pointer and size
+                                    let initialized_buf = unsafe {
+                                        std::slice::from_raw_parts(buf.as_ptr() as *const u8, size)
+                                    };
+
+                                    // Validate the packet
+                                    if let Ok(reply) = IcmpEchoReply::decode(initialized_buf) {
+                                        // Identity Check: Is this our packet?
+                                        if reply.identifier == icmp_identifier && reply.sequence_number == icmp_seq {
+                                            return Ok(icmp_start.elapsed().as_secs_f64() * 1000.0);
+                                        }
+                                    }
+
+                                    // If we received an alien packet, check if we still have time left to wait
+                                    if icmp_start.elapsed() > timeout_duration {
+                                        return Err("ICMP Timeout".to_string());
+                                    }
+                                },
+                                Err(_) => return Err("ICMP Timeout".to_string()), // OS Timeout triggered
+                            }
                         }
                     }).await.unwrap_or_else(|_| Err("Thread Panicked".to_string()));
 

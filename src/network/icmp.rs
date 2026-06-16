@@ -93,3 +93,50 @@ impl IcmpEchoRequest {
         !sum as u16
     }
 }
+
+
+/// ICMP Type for an Echo Reply
+const ICMP_TYPE_ECHO_REPLY: u8 = 0;
+
+/// Represents an incoming ICMP Echo Reply Packet.
+#[derive(Debug)]
+pub struct IcmpEchoReply {
+    pub type_: u8,
+    pub code: u8,
+    pub identifier: u16,
+    pub sequence_number: u16,
+}
+
+impl IcmpEchoReply {
+    /// Decodes a raw byte buffer into an IcmpEchoReply struct.
+    /// Returns an Error if the buffer is too small or malformed.
+    pub fn decode(buffer: &[u8]) -> Result<Self, &'static str> {
+        // An ICMP header must be at least 8 bytes long.
+        if buffer.len() < 8 {
+            return Err("Buffer too short to contain a valid ICMP header");
+        }
+
+        let type_ = buffer[0];
+        let code = buffer[1];
+
+        // Only parse if it's actually an Echo Reply.
+        // (Note: Unprivileged datagram sockets usually strip the IP header, 
+        // so byte 0 is the start of the ICMP header).
+        if type_ != ICMP_TYPE_ECHO_REPLY {
+            return Err("Not an ICMP Echo Reply");
+        }
+
+        // Reconstruct the 16-bit Identifier from Network Byte Order (Big-Endian)
+        let identifier = u16::from_be_bytes([buffer[4], buffer[5]]);
+        
+        // Reconstruct the 16-bit Sequence Number from Network Byte Order (Big-Endian)
+        let sequence_number = u16::from_be_bytes([buffer[6], buffer[7]]);
+
+        Ok(Self {
+            type_,
+            code,
+            identifier,
+            sequence_number,
+        })
+    }
+}
