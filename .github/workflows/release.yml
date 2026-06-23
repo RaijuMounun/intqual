@@ -1,0 +1,81 @@
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: intqual
+            asset_name: intqual-linux-amd64
+          - os: windows-latest
+            artifact_name: intqual.exe
+            asset_name: intqual-windows-amd64.exe
+          - os: macos-latest
+            artifact_name: intqual
+            asset_name: intqual-macos-amd64
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build Release Binary
+        run: cargo build --release
+
+      - name: Rename Artifact (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: mv target/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+
+      - name: Rename Artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        run: Rename-Item -Path "target\release\${{ matrix.artifact_name }}" -NewName "${{ matrix.asset_name }}"
+
+      - name: Upload Release Assets to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-winget:
+    name: Publish to Winget
+    runs-on: ubuntu-latest
+    needs: build-and-release
+    steps:
+      - name: Submit manifest to Windows Package Manager
+        uses: vedantmgoyal2009/winget-releaser@v2
+        with:
+          identifier: RaijuMounun.intqual
+          installers-regex: '\.exe$'
+          max-retries: 5
+          token: ${{ secrets.WINGET_TOKEN }}
+
+  publish-homebrew:
+    name: Publish to Homebrew
+    runs-on: ubuntu-latest
+    needs: build-and-release
+    steps:
+      - name: Release to Homebrew Tap
+        uses: Justintime50/homebrew-releaser@v1
+        with:
+          homebrew_owner: RaijuMounun
+          homebrew_tap: homebrew-intqual
+          formula_folder: Formula
+          github_token: ${{ secrets.WINGET_TOKEN }}
+          commit_owner: RaijuMounun
+          commit_email: erenkeskinoglu@outlook.com
+          depends_on: '"rust" => :build'
+          install: 'system "cargo", "install", *std_cargo_args'
+          test: 'system "#{bin}/intqual --version"'
