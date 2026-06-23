@@ -9,10 +9,10 @@ use socket2::{Domain, Protocol, Socket, Type};
 use crate::models::NetworkMetrics;
 use crate::network::icmp::{IcmpEchoRequest, IcmpEchoReply};
 
-/// The `FallbackEngine` is responsible for measuring network latency without requiring elevated privileges.
+/// The `CoreEngine` is responsible for measuring network latency without requiring elevated privileges.
 /// It utilizes a concurrent dual-probing strategy (TCP Handshake and Unprivileged ICMP Datagrams)
 /// to ensure high observability even in restricted OS environments.
-pub struct FallbackEngine {
+pub struct CoreEngine {
     /// Shared reference to the target IP to avoid unnecessary cloning across spawned micro-tasks.
     pub target_ip: Arc<String>,
     pub target_port: u16,
@@ -20,8 +20,8 @@ pub struct FallbackEngine {
     pub timeout: Duration,
 }
 
-impl FallbackEngine {
-    /// Instantiates a new `FallbackEngine` with injected configuration parameters.
+impl CoreEngine {
+    /// Instantiates a new `CoreEngine` with injected configuration parameters.
     pub fn new(target_ip: String, target_port: u16, interval_ms: u64, timeout_ms: u64) -> Self {
         Self {
             target_ip: Arc::new(target_ip),

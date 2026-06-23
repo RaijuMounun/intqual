@@ -1,4 +1,4 @@
-pub mod fallback;
+pub mod core_engine;
 
 use crate::models::NetworkMetrics;
 use std::sync::mpsc;
@@ -14,4 +14,4 @@ pub trait NetworkEngine {
     fn start(&self, tx: mpsc::Sender<NetworkMetrics>);
 }
 
-pub use fallback::FallbackEngine;
+pub use core_engine::CoreEngine;

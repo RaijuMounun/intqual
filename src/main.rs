@@ -4,7 +4,7 @@ pub mod network;
 pub mod ui;
 
 use clap::Parser;
-use engine::FallbackEngine;
+use engine::CoreEngine;
 use tokio::sync::mpsc;
 
 /// Represents the Command Line Interface arguments.
@@ -38,10 +38,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = mpsc::channel(100);
 
     // 3. Instantiate the engine with injected configurations
-    let fallback_engine = FallbackEngine::new(cli.target, cli.port, cli.interval, cli.timeout);
+    let core_engine = CoreEngine::new(cli.target, cli.port, cli.interval, cli.timeout);
 
     // 4. Ignite the async engine in the background (Fire and Forget)
-    fallback_engine.start(tx).await;
+    core_engine.start(tx).await;
 
     // 5. Transfer the main thread to the UI event loop.
     // This function is blocking and consumes metrics from the receiver.
