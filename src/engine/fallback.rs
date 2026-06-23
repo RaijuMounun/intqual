@@ -1,4 +1,4 @@
-use std::mem::MaybeUninit; // FIXED: Imported MaybeUninit for uninitialized memory buffers
+use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -87,7 +87,25 @@ impl FallbackEngine {
                         timeout_duration, 
                         TcpStream::connect(target_addr)
                     ).await {
-                        Ok(Ok(_stream)) => Ok(start_time.elapsed().as_secs_f64() * 1000.0),
+                        Ok(Ok(stream)) => {
+                            let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
+                            
+                            // OPTIMIZATION: Zero-Cost TIME_WAIT prevention.
+                            // We offload the socket closure to a blocking thread pool.
+                            // This prevents the OS-level TCP RST (Linger) from stalling our async reactor.
+                            tokio::task::spawn_blocking(move || {
+                                // socket2::SockRef is the modern, safe way to manipulate socket options 
+                                // without triggering Tokio's deprecation warnings.
+                                let sock_ref = socket2::SockRef::from(&stream);
+                                let _ = sock_ref.set_linger(Some(Duration::from_secs(0)));
+                                
+                                // Dropping the stream here explicitly closes the socket 
+                                // and sends the RST packet in the background.
+                                drop(stream);
+                            });
+
+                            Ok(elapsed)
+                        },
                         Ok(Err(e)) => Err(format!("Socket Error: {}", e)),
                         Err(_) => Err("TCP Timeout".to_string()),
                     };

@@ -97,18 +97,37 @@ pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>) -> Result<()> {
 
     let mut app = AppState::new();
 
+    // Uygulama ilk açıldığında boş ekranı 1 kere çiz
+    terminal.draw(|frame| draw_ui(frame, &app))?;
+
     loop {
+        let mut state_changed = false;
+
+        // Kuyruktaki yeni verileri topla
         while let Ok(metric) = rx.try_recv() {
             app.push_metric(metric);
+            state_changed = true; // Veri değişti, ekran "Kirli" (Dirty)
         }
 
-        terminal.draw(|frame| draw_ui(frame, &app))?;
+        // OPTİMİZASYON: Sadece yeni veri geldiyse GPU'yu yor ve ekranı tekrar çiz!
+        if state_changed {
+            terminal.draw(|frame| draw_ui(frame, &app))?;
+        }
 
-        if event::poll(Duration::from_millis(16))? {
-            if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    break;
+        // UI Event Loop (Klavye ve Yeniden Boyutlandırma dinleyicisi)
+        // CPU'yu dinlendirmek için 50ms bekle (20 FPS tepkime süresi fazlasıyla yeterli)
+        if event::poll(Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.code == KeyCode::Char('q') {
+                        break;
+                    }
                 }
+                Event::Resize(_, _) => {
+                    // Kullanıcı terminal penceresini büyütüp küçülttüğünde zorla yeniden çiz
+                    terminal.draw(|frame| draw_ui(frame, &app))?;
+                }
+                _ => {}
             }
         }
     }
