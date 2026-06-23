@@ -5,7 +5,7 @@ use crossterm::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, LegendPosition},
+    widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, LegendPosition, Sparkline},
     symbols,
 };
 use std::io::{stdout, Result};
@@ -13,6 +13,9 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use crate::models::NetworkMetrics;
 
+/// Defines the maximum number of data points retained in memory for rendering.
+/// 100 perfectly balances the memory footprint with optimal visual data density 
+/// for standard terminal widths, ensuring the sliding window remains legible.
 const HISTORY_SIZE: usize = 100;
 
 pub struct AppState {
@@ -20,6 +23,10 @@ pub struct AppState {
     pub latest_sequence: u64,
 }
 
+/// Manages the volatile view state for the terminal UI.
+/// By isolating the view state (history, sequence tracking) from the CoreEngine, 
+/// the engine remains completely stateless and pure, avoiding complex lock-contention 
+/// between the async I/O reactor and the synchronous rendering thread.
 impl AppState {
     pub fn new() -> Self {
         let mut history = Vec::with_capacity(HISTORY_SIZE);
@@ -32,6 +39,7 @@ impl AppState {
         }
     }
 
+    /// Ingests a new metric into the ring buffer.
     pub fn push_metric(&mut self, metric: NetworkMetrics) {
         if metric.sequence_number > self.latest_sequence {
             self.latest_sequence = metric.sequence_number;
@@ -40,7 +48,10 @@ impl AppState {
         self.history[index] = Some(metric);
     }
 
-    /// Calculates Packet Loss (%) and Jitter (ms) based on the current history buffer.
+    /// Computes diagnostic aggregations (Packet Loss, Avg Jitter) dynamically.
+    /// O(N) Compute: Calculating stats on-the-fly during the render loop is intentionally 
+    /// chosen over maintaining stateful counters. It guarantees mathematical accuracy based 
+    /// strictly on the visible window and eliminates memory duplication overhead.
     pub fn calculate_stats(&self) -> (f64, f64) {
         let mut loss_count = 0;
         let mut total_count = 0;
@@ -59,7 +70,6 @@ impl AppState {
                     
                     match metric.icmp_ping {
                         Ok(ping) => {
-                            // Jitter calculation: absolute difference between consecutive successful pings
                             if let Some(last) = last_ping {
                                 jitter_sum += (ping - last).abs();
                                 jitter_count += 1;
@@ -90,6 +100,7 @@ impl AppState {
     }
 }
 
+/// The main synchronous event loop for the Terminal User Interface.
 pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -97,25 +108,27 @@ pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>) -> Result<()> {
 
     let mut app = AppState::new();
 
-    // Uygulama ilk açıldığında boş ekranı 1 kere çiz
+    // Initial render to prevent a blank screen before the first packet arrives.
     terminal.draw(|frame| draw_ui(frame, &app))?;
 
+    // THE IMMEDIATE-MODE GUI LOOP
     loop {
+        // Dirty Flag: Terminates redundant GPU/Compositor rendering.
+        // Re-rendering 60+ FPS in a terminal causes severe compositor timeouts 
+        // (e.g., KDE KWin, WebGL environments) and CPU spikes. We strictly only issue 
+        // a draw command if new data has actively altered the state.
         let mut state_changed = false;
 
-        // Kuyruktaki yeni verileri topla
         while let Ok(metric) = rx.try_recv() {
             app.push_metric(metric);
-            state_changed = true; // Veri değişti, ekran "Kirli" (Dirty)
+            state_changed = true;
         }
 
-        // OPTİMİZASYON: Sadece yeni veri geldiyse GPU'yu yor ve ekranı tekrar çiz!
         if state_changed {
             terminal.draw(|frame| draw_ui(frame, &app))?;
         }
 
-        // UI Event Loop (Klavye ve Yeniden Boyutlandırma dinleyicisi)
-        // CPU'yu dinlendirmek için 50ms bekle (20 FPS tepkime süresi fazlasıyla yeterli)
+        // Throttle the event poller to 50ms (20 FPS) to drastically reduce idle CPU footprint.
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) => {
@@ -124,7 +137,7 @@ pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>) -> Result<()> {
                     }
                 }
                 Event::Resize(_, _) => {
-                    // Kullanıcı terminal penceresini büyütüp küçülttüğünde zorla yeniden çiz
+                    // Force a re-render when the user resizes the terminal window to prevent visual artifacting.
                     terminal.draw(|frame| draw_ui(frame, &app))?;
                 }
                 _ => {}
@@ -137,21 +150,30 @@ pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>) -> Result<()> {
     Ok(())
 }
 
+/// Renders the UI frame using a Bento Grid architecture.
 fn draw_ui(frame: &mut Frame, app: &AppState) {
     let area = frame.area();
 
-    // 1. LAYOUT ARCHITECTURE
+    // 1. MACRO LAYOUT (F-Pattern)
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
         .split(area);
 
-    // 2. DATA PREPARATION
+    
+    let right_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .split(main_layout[1]);
+
+    // 2. DATA EXTRACTION
     let mut icmp_data: Vec<(f64, f64)> = Vec::new();
     let mut tcp_data: Vec<(f64, f64)> = Vec::new();
+    let mut jitter_history: Vec<u64> = Vec::new();
     let mut max_ping: f64 = 50.0; 
 
     let start_seq = app.latest_sequence.saturating_sub(HISTORY_SIZE as u64);
+    let mut last_icmp_ping: Option<f64> = None;
     
     for seq in start_seq..=app.latest_sequence {
         let idx = (seq % HISTORY_SIZE as u64) as usize;
@@ -160,21 +182,37 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
                 if let Ok(ping) = metric.icmp_ping {
                     icmp_data.push((seq as f64, ping));
                     if ping > max_ping { max_ping = ping; }
+
+                    if let Some(last) = last_icmp_ping {
+                        let j = (ping - last).abs();
+                        jitter_history.push(j.round() as u64);
+                    } else {
+                        jitter_history.push(0);
+                    }
+                    last_icmp_ping = Some(ping);
+                } else {
+                    icmp_data.push((seq as f64, 0.0));
+                    jitter_history.push(0);
                 }
+
                 if let Ok(ping) = metric.tcp_ping {
                     tcp_data.push((seq as f64, ping));
                     if ping > max_ping { max_ping = ping; }
                 }
             }
+        } else {
+            jitter_history.push(0);
         }
     }
 
-    // 3. LEFT COLUMN: LIVE METRICS
+    // 3. LEFT COLUMN (Actionable Metrics & Alarms)
     let (loss_pct, jitter) = app.calculate_stats();
     let latest_idx = (app.latest_sequence % HISTORY_SIZE as u64) as usize;
+    
+    let mut stats_lines = Vec::new();
 
-    let stats_text = if app.latest_sequence == 0 {
-        "\n  Waiting for data...".to_string()
+    if app.latest_sequence == 0 {
+        stats_lines.push(Line::from("  Waiting for data..."));
     } else if let Some(ref metric) = app.history[latest_idx] {
         let icmp_str = match &metric.icmp_ping {
             Ok(ms) => format!("{:.1} ms", ms),
@@ -185,35 +223,60 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
             Err(e) => e.clone(),
         };
         
-        format!(
-            "\n Target:\n {}\n\n ICMP Ping:\n {}\n\n TCP Ping:\n {}\n\n Jitter:\n {:.1} ms\n\n Pkt Loss:\n {:.1}%\n\n Seq ID: {}",
-            metric.target_ip, icmp_str, tcp_str, jitter, loss_pct, metric.sequence_number
-        )
-    } else {
-        "\n State Error".to_string()
-    };
+        stats_lines.push(Line::from(vec![Span::styled(" Target:", Style::default().fg(Color::DarkGray))]));
+        stats_lines.push(Line::from(vec![Span::styled(format!(" {}", metric.target_ip), Style::default().add_modifier(Modifier::BOLD))]));
+        stats_lines.push(Line::from(""));
 
-    let stats_block = Paragraph::new(stats_text)
-        .block(Block::default().title(" Live Metrics ").borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)))
-        .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
+        stats_lines.push(Line::from(vec![Span::styled(" ICMP Ping (Network):", Style::default().fg(Color::DarkGray))]));
+        stats_lines.push(Line::from(vec![Span::styled(format!(" {}", icmp_str), Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD))]));
+        stats_lines.push(Line::from(""));
+
+        stats_lines.push(Line::from(vec![Span::styled(" TCP Ping (App Layer):", Style::default().fg(Color::DarkGray))]));
+        stats_lines.push(Line::from(vec![Span::styled(format!(" {}", tcp_str), Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD))]));
+        stats_lines.push(Line::from(""));
+
+        // DYNAMIC ALARM: Moderate instability warning threshold (20ms)
+        let jitter_style = if jitter > 20.0 {
+            Style::default().fg(Color::LightYellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)
+        };
+        stats_lines.push(Line::from(vec![Span::styled(" Jitter (Stability):", Style::default().fg(Color::DarkGray))]));
+        stats_lines.push(Line::from(vec![Span::styled(format!(" {:.1} ms", jitter), jitter_style)]));
+        stats_lines.push(Line::from(""));
+
+        // DYNAMIC ALARM: Catastrophic failure detection
+        // Inverting colors (Red BG/Black Text) creates an immediate, unignorable visual pop.
+        let loss_style = if loss_pct > 0.0 {
+            Style::default().fg(Color::Black).bg(Color::LightRed).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        };
+        stats_lines.push(Line::from(vec![Span::styled(" Pkt Loss (Survival):", Style::default().fg(Color::DarkGray))]));
+        stats_lines.push(Line::from(vec![Span::styled(format!(" {:.1}%", loss_pct), loss_style)]));
+        stats_lines.push(Line::from(""));
+
+        stats_lines.push(Line::from(vec![Span::styled(format!(" Seq ID: {}", metric.sequence_number), Style::default().fg(Color::DarkGray))]));
+    }
+
+    let stats_block = Paragraph::new(Text::from(stats_lines))
+        .block(Block::default().title(" Live Metrics ").borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)));
 
     frame.render_widget(stats_block, main_layout[0]);
 
-    // 4. RIGHT COLUMN: SLIDING WINDOW CHART
+    // 4. RIGHT TOP PANEL (Latency Lines)
     let datasets = vec![
-        // TCP rendered FIRST (Background)
         Dataset::default()
             .name("TCP (App)")
             .marker(symbols::Marker::Braille)
             .graph_type(GraphType::Line)
             .style(Style::default().fg(Color::DarkGray))
             .data(&tcp_data),
-        // ICMP rendered SECOND (Foreground)
         Dataset::default()
             .name("ICMP (Ping)")
             .marker(symbols::Marker::Braille)
             .graph_type(GraphType::Line)
-            .style(Style::default().fg(Color::LightCyan)) // Made it brighter
+            .style(Style::default().fg(Color::LightCyan))
             .data(&icmp_data),
     ];
 
@@ -221,17 +284,8 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
     let y_bounds = [0.0, max_ping * 1.1]; 
 
     let chart = Chart::new(datasets)
-        .block(Block::default().title(" Real-time Network Latency (ms) [Press 'Q' to exit] ").borders(Borders::ALL).border_style(Style::default().fg(Color::LightCyan)))
-        .x_axis(
-            Axis::default()
-                .title("Time (Seq)")
-                .style(Style::default().fg(Color::DarkGray))
-                .bounds(x_bounds)
-                .labels(vec![
-                    Span::raw(format!("{}", start_seq)),
-                    Span::raw(format!("{}", app.latest_sequence)),
-                ]),
-        )
+        .block(Block::default().title(" Latency History (ms) [Exit: Q] ").borders(Borders::ALL).border_style(Style::default().fg(Color::LightCyan)))
+        .x_axis(Axis::default().style(Style::default().fg(Color::DarkGray)).bounds(x_bounds))
         .y_axis(
             Axis::default()
                 .title("ms")
@@ -243,8 +297,19 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
                     Span::raw(format!("{:.0}", max_ping)),
                 ]),
         )
-        // Position legend in the top left to prevent blocking active right-side data
         .legend_position(Some(LegendPosition::TopLeft));
 
-    frame.render_widget(chart, main_layout[1]);
+    frame.render_widget(chart, right_layout[0]);
+
+    // 5. RIGHT BOTTOM PANEL (Gestalt Jitter Sparkline)
+    // WHY Gestalt: Differentiating the form factor (Lines for latency, Bars for jitter) 
+    // prevents cognitive overload while keeping their X-axes perfectly synced vertically.
+    let jitter_color = if jitter > 20.0 { Color::LightYellow } else { Color::Magenta };
+    
+    let jitter_sparkline = Sparkline::default()
+        .block(Block::default().title(" Jitter Deviation Trend (Gestalt Bar Chart) ").borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)))
+        .data(&jitter_history)
+        .style(Style::default().fg(jitter_color));
+
+    frame.render_widget(jitter_sparkline, right_layout[1]);
 }
