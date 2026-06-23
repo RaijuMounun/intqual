@@ -3,15 +3,16 @@ pub mod core_engine;
 use crate::models::NetworkMetrics;
 use std::sync::mpsc;
 
-/// The core contract for all network engine implementations.
-/// Any engine (Raw, Fallback, etc.) must implement this trait to be injected into the system.
+/// The core contract for network engine implementations.
+/// 
+/// Implementing this trait allows different probing strategies (e.g., strictly unprivileged, 
+/// strictly raw, or hybrid fallback) to be injected interchangeably into the application lifecycle.
 pub trait NetworkEngine {
-    /// Starts the network monitoring loop.
+    /// Ignites the network monitoring loop.
     /// 
-    /// # Arguments
-    /// 
-    /// * `tx` - The transmission half of an MPSC channel used to push metrics to the consumer (UI).
-    fn start(&self, tx: mpsc::Sender<NetworkMetrics>);
+    /// The engine spawns background tasks and continuously streams measurement results 
+    /// back to the provided MPSC transmission channel.
+    fn start(self, tx: mpsc::Sender<NetworkMetrics>) -> impl std::future::Future<Output = ()> + Send;
 }
 
 pub use core_engine::CoreEngine;

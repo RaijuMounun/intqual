@@ -1,5 +1,3 @@
-// src/ui/mod.rs
-
 use crossterm::{
     event::{self, Event, KeyCode},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -15,6 +13,9 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use crate::models::NetworkMetrics;
 
+/// Defines the maximum number of data points retained in memory for rendering.
+/// 100 perfectly balances the memory footprint with optimal visual data density 
+/// for standard terminal widths, ensuring the sliding window remains legible.
 const HISTORY_SIZE: usize = 100;
 
 pub struct AppState {
@@ -22,6 +23,10 @@ pub struct AppState {
     pub latest_sequence: u64,
 }
 
+/// Manages the volatile view state for the terminal UI.
+/// By isolating the view state (history, sequence tracking) from the CoreEngine, 
+/// the engine remains completely stateless and pure, avoiding complex lock-contention 
+/// between the async I/O reactor and the synchronous rendering thread.
 impl AppState {
     pub fn new() -> Self {
         let mut history = Vec::with_capacity(HISTORY_SIZE);
@@ -34,6 +39,7 @@ impl AppState {
         }
     }
 
+    /// Ingests a new metric into the ring buffer.
     pub fn push_metric(&mut self, metric: NetworkMetrics) {
         if metric.sequence_number > self.latest_sequence {
             self.latest_sequence = metric.sequence_number;
@@ -42,7 +48,10 @@ impl AppState {
         self.history[index] = Some(metric);
     }
 
-    /// Calculates Packet Loss (%) and Jitter (ms) based on the current history buffer.
+    /// Computes diagnostic aggregations (Packet Loss, Avg Jitter) dynamically.
+    /// O(N) Compute: Calculating stats on-the-fly during the render loop is intentionally 
+    /// chosen over maintaining stateful counters. It guarantees mathematical accuracy based 
+    /// strictly on the visible window and eliminates memory duplication overhead.
     pub fn calculate_stats(&self) -> (f64, f64) {
         let mut loss_count = 0;
         let mut total_count = 0;
@@ -91,6 +100,7 @@ impl AppState {
     }
 }
 
+/// The main synchronous event loop for the Terminal User Interface.
 pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -98,9 +108,15 @@ pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>) -> Result<()> {
 
     let mut app = AppState::new();
 
+    // Initial render to prevent a blank screen before the first packet arrives.
     terminal.draw(|frame| draw_ui(frame, &app))?;
 
+    // THE IMMEDIATE-MODE GUI LOOP
     loop {
+        // Dirty Flag: Terminates redundant GPU/Compositor rendering.
+        // Re-rendering 60+ FPS in a terminal causes severe compositor timeouts 
+        // (e.g., KDE KWin, WebGL environments) and CPU spikes. We strictly only issue 
+        // a draw command if new data has actively altered the state.
         let mut state_changed = false;
 
         while let Ok(metric) = rx.try_recv() {
@@ -112,6 +128,7 @@ pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>) -> Result<()> {
             terminal.draw(|frame| draw_ui(frame, &app))?;
         }
 
+        // Throttle the event poller to 50ms (20 FPS) to drastically reduce idle CPU footprint.
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) => {
@@ -120,6 +137,7 @@ pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>) -> Result<()> {
                     }
                 }
                 Event::Resize(_, _) => {
+                    // Force a re-render when the user resizes the terminal window to prevent visual artifacting.
                     terminal.draw(|frame| draw_ui(frame, &app))?;
                 }
                 _ => {}
@@ -132,25 +150,26 @@ pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>) -> Result<()> {
     Ok(())
 }
 
+/// Renders the UI frame using a Bento Grid architecture.
 fn draw_ui(frame: &mut Frame, app: &AppState) {
     let area = frame.area();
 
-    // 1. BENTO GRID LAYOUT (Sol: %20 Genişlik, Sağ: %80 Genişlik)
+    // 1. MACRO LAYOUT (F-Pattern)
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
         .split(area);
 
-    // Sağ sütunu kendi içinde bölüyoruz: Üst %70 Latency, Alt %30 Jitter
+    
     let right_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(main_layout[1]);
 
-    // 2. DATA PREPARATION (Extracting Trends)
+    // 2. DATA EXTRACTION
     let mut icmp_data: Vec<(f64, f64)> = Vec::new();
     let mut tcp_data: Vec<(f64, f64)> = Vec::new();
-    let mut jitter_history: Vec<u64> = Vec::new(); // Sparkline için u64 dizisi
+    let mut jitter_history: Vec<u64> = Vec::new();
     let mut max_ping: f64 = 50.0; 
 
     let start_seq = app.latest_sequence.saturating_sub(HISTORY_SIZE as u64);
@@ -160,12 +179,10 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
         let idx = (seq % HISTORY_SIZE as u64) as usize;
         if let Some(ref metric) = app.history[idx] {
             if metric.sequence_number == seq {
-                // Latency Çizgileri İçin Veri Toplama
                 if let Ok(ping) = metric.icmp_ping {
                     icmp_data.push((seq as f64, ping));
                     if ping > max_ping { max_ping = ping; }
 
-                    // Senkronize Jitter Trend Hesaplaması (X ekseniyle tam hizalı olması için)
                     if let Some(last) = last_icmp_ping {
                         let j = (ping - last).abs();
                         jitter_history.push(j.round() as u64);
@@ -174,8 +191,8 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
                     }
                     last_icmp_ping = Some(ping);
                 } else {
-                    icmp_data.push((seq as f64, 0.0)); // Paket kaybı durumunda boşluk olmasın diye 0 basıyoruz
-                    jitter_history.push(0); // Paket kaybında o saniyede jitter ölçülemez
+                    icmp_data.push((seq as f64, 0.0));
+                    jitter_history.push(0);
                 }
 
                 if let Ok(ping) = metric.tcp_ping {
@@ -188,7 +205,7 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
         }
     }
 
-    // 3. SOL SÜTUN: KRİTİK ANLIK RAKAMLAR & ALARMLAR
+    // 3. LEFT COLUMN (Actionable Metrics & Alarms)
     let (loss_pct, jitter) = app.calculate_stats();
     let latest_idx = (app.latest_sequence % HISTORY_SIZE as u64) as usize;
     
@@ -218,7 +235,7 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
         stats_lines.push(Line::from(vec![Span::styled(format!(" {}", tcp_str), Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD))]));
         stats_lines.push(Line::from(""));
 
-        // JITTER ALARMI: Eşik değeri (20ms) aşılırsa sayıyı Sarı (Warning) yap
+        // DYNAMIC ALARM: Moderate instability warning threshold (20ms)
         let jitter_style = if jitter > 20.0 {
             Style::default().fg(Color::LightYellow).add_modifier(Modifier::BOLD)
         } else {
@@ -228,8 +245,8 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
         stats_lines.push(Line::from(vec![Span::styled(format!(" {:.1} ms", jitter), jitter_style)]));
         stats_lines.push(Line::from(""));
 
-        // 🚨 KATASTROFİK PAKET KAYBI ALARMI (Görsel Patlama)
-        // Eğer paket kaybı sıfırdan büyükse, arka planı parlak Kırmızı yap ve metni ters çevirerek (Invert) kullanıcının gözüne sok!
+        // DYNAMIC ALARM: Catastrophic failure detection
+        // Inverting colors (Red BG/Black Text) creates an immediate, unignorable visual pop.
         let loss_style = if loss_pct > 0.0 {
             Style::default().fg(Color::Black).bg(Color::LightRed).add_modifier(Modifier::BOLD)
         } else {
@@ -247,7 +264,7 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
 
     frame.render_widget(stats_block, main_layout[0]);
 
-    // 4. SAĞ ÜST PANEL: LATENCY ÇİZGİ GRAFİĞİ (%70 Alan)
+    // 4. RIGHT TOP PANEL (Latency Lines)
     let datasets = vec![
         Dataset::default()
             .name("TCP (App)")
@@ -284,8 +301,9 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
 
     frame.render_widget(chart, right_layout[0]);
 
-    // 5. SAĞ ALT PANEL: JITTER BAR GRAFİĞİ (Sparkline - %30 Alan)
-    // Jitter anlık olarak 20ms'yi aşarsa tüm alt paneli ve barları Sarıya boyayarak alarm durumuna geçiyoruz.
+    // 5. RIGHT BOTTOM PANEL (Gestalt Jitter Sparkline)
+    // WHY Gestalt: Differentiating the form factor (Lines for latency, Bars for jitter) 
+    // prevents cognitive overload while keeping their X-axes perfectly synced vertically.
     let jitter_color = if jitter > 20.0 { Color::LightYellow } else { Color::Magenta };
     
     let jitter_sparkline = Sparkline::default()
