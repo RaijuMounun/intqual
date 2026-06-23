@@ -29,7 +29,7 @@ Grab the latest compiled, zero-dependency executable from the Releases page and 
 
 Ensure you have the Rust toolchain installed, then run:
 ```bash
-git clone [https://github.com/RaijuMounun/intqual.git](https://github.com/RaijuMounun/intqual.git)
+git clone https://github.com/RaijuMounun/intqual.git
 cd intqual
 cargo build --release
 ```
