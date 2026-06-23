@@ -1,2 +1,8 @@
 /target
 **/*.rs.bk
+
+# Arch Linux makepkg artifacts
+*.pkg.tar.*
+*.tar.gz
+pkg/
+src/intqual-*/

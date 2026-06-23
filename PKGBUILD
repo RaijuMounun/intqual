@@ -9,7 +9,7 @@ license=('MIT')
 depends=('gcc-libs')
 makedepends=('cargo')
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/RaijuMounun/${pkgname}/archive/refs/tags/${pkgver}.tar.gz")
-sha256sums=('f8c0de10f2e83e77093de45ecb31fc584af37f6bbaf2a6710df94d8767fc85d6')
+sha256sums=('48da51ed5abb2e981ee88ecc125a57f5139c1484244091838caa60dd53c9f997')
 
 build() {
   cd "${pkgname}-${pkgver}"
