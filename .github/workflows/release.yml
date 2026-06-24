@@ -82,3 +82,35 @@ jobs:
           depends_on: '"rust" => :build'
           install: 'system "cargo", "install", *std_cargo_args'
           test: 'system "#{bin}/intqual --version"'
+
+  publish-crates:
+    name: Publish to Crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          branch: main # Değişikliği ana dala yazabilmesi için
+
+      - name: Setup Rust Toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Update Cargo.toml Version & Commit Back
+        run: |
+          # v1.0.5 etiketinden 'v' harfini uçurup sadece 1.0.5 sürümünü alıyoruz
+          VERSION=${GITHUB_REF_NAME#v}
+          
+          # Cargo.toml içindeki ilk 'version = "X.X.X"' alanını yeni sürümle değiştiriyoruz
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          
+          # Bu değişikliği depodaki main branch'e otomatik commit'leyip pushluyoruz
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml
+          git commit -m "chore: bump version to $VERSION [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:main
+
+      - name: Publish to Crates.io
+        run: cargo publish --token ${{ secrets.CRATES_TOKEN }}
