@@ -14,25 +14,41 @@ Unlike traditional `ping` utilities that only measure network-layer (ICMP) laten
 * **Active Visual Alarms:** High-contrast terminal inversion for catastrophic packet loss and threshold-based color coding for jitter instability.
 
 ## Installation
-
-### Arch Linux (AUR)
-If you are on an Arch-based distribution, you can install Intqual directly from the Arch User Repository:
+### macOS & Linux (Homebrew)
+The easiest way to install on macOS and Linux is via our official Homebrew tap:
 ```bash
-yay -S intqual
+brew tap RaijuMounun/intqual
+brew install intqual
+```
+or
+```bash
+brew install RaijuMounun/intqual/intqual
 ```
 
-### From Binaries (Linux)
+### Windows (Winget)
+You can easily install `intqual` on Windows 10/11 using the official Windows Package Manager:
+```powershell
+winget install RaijuMounun.intqual
+```
+(Note: Must be run in a terminal with Administrator privileges if your system strictly blocks raw ICMP sockets).
 
-Grab the latest compiled, zero-dependency executable from the Releases page and place it in your PATH.
-
-#### Build from Source (Cargo)
-
-Ensure you have the Rust toolchain installed, then run:
+### Arch Linux (AUR)
+If you are on an Arch-based distribution, clone the repository and build the package locally via `makepkg`. It will be available on the official AUR soon:
 ```bash
 git clone https://github.com/RaijuMounun/intqual.git
 cd intqual
-cargo build --release
+makepkg -si
 ```
+
+### Universal (Cargo)
+If you have the Rust toolchain installed, you can compile and install it globally from source:
+```bash
+cargo install intqual
+```
+
+### Pre-compiled Binaries
+Grab the latest standalone executable for your OS from the [Releases](https://github.com/RaijuMounun/intqual/releases) page and place it in your system's `PATH`.
+
 
 ## Usage
 
