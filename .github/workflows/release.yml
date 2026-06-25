@@ -90,7 +90,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          ref: main # Değişikliği ana dala yazabilmesi için
+          ref: master # Değişikliği ana dala yazabilmesi için
 
       - name: Setup Rust Toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -105,12 +105,12 @@ jobs:
           # Cargo.toml içindeki ilk 'version = "X.X.X"' alanını yeni sürümle değiştiriyoruz
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           
-          # Bu değişikliği depodaki main branch'e otomatik commit'leyip pushluyoruz
+          # Bu değişikliği depodaki master branch'e otomatik commit'leyip pushluyoruz
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml
           git commit -m "chore: bump version to $VERSION [skip ci]" || echo "No changes to commit"
-          git push origin HEAD:refs/heads/main
+          git push origin HEAD:refs/heads/master
 
       - name: Publish to Crates.io
         run: cargo publish --token ${{ secrets.CRATES_TOKEN }}
