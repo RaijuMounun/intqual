@@ -1,6 +1,6 @@
 [package]
 name = "intqual"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2024"
 authors = ["Eren Keskinoğlu <erenkeskinoglu@outlook.com>"]
 description = "A dual-layer asynchronous network latency analyzer and observability tool using unprivileged ICMP & TCP handshakes."
