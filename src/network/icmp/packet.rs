@@ -25,32 +25,7 @@ impl IcmpEchoRequest {
     /// Serializes the ICMP packet into a raw byte array (`Vec<u8>`) ready to be sent over the wire.
     /// This function handles the Big-Endian conversion and checksum calculation.
     pub fn encode(&self) -> Vec<u8> {
-        // The ICMP header is exactly 8 bytes
-        let mut buffer = vec![0u8; 8 + self.payload.len()];
-
-        // 1. Write Type and Code (Bytes 0 and 1)
-        buffer[0] = ICMP_TYPE_ECHO_REQUEST;
-        buffer[1] = ICMP_CODE_ECHO_REQUEST;
-        
-        // Byte 2 and 3 are for the Checksum. We leave them as 0x00 for now, 
-        // because the checksum must be calculated over the ENTIRE packet (header + payload) 
-        // while the checksum field itself is zero.
-
-        // 2. Write Identifier (Bytes 4 and 5)
-        // NETWORK BYTE ORDER RULE: We must convert from Host (Little-Endian) to Network (Big-Endian).
-        let id_bytes = self.identifier.to_be_bytes();
-        buffer[4] = id_bytes[0];
-        buffer[5] = id_bytes[1];
-
-        // 3. Write Sequence Number (Bytes 6 and 7)
-        let seq_bytes = self.sequence_number.to_be_bytes();
-        buffer[6] = seq_bytes[0];
-        buffer[7] = seq_bytes[1];
-
-        // 4. Copy the payload (if any) starting from Byte 8
-        if !self.payload.is_empty() {
-            buffer[8..].copy_from_slice(&self.payload);
-        }
+        let mut buffer = self.encode_without_checksum();
 
         // 5. Calculate the Checksum over the entire buffer
         let checksum = Self::calculate_checksum(&buffer);
@@ -59,6 +34,31 @@ impl IcmpEchoRequest {
         let checksum_bytes = checksum.to_be_bytes();
         buffer[2] = checksum_bytes[0];
         buffer[3] = checksum_bytes[1];
+
+        buffer
+    }
+
+    /// Serializes the ICMP packet into a raw byte array WITHOUT calculating the checksum.
+    /// This is used for Unix DGRAM sockets where the OS handles the checksum.
+    pub fn encode_without_checksum(&self) -> Vec<u8> {
+        let mut buffer = vec![0u8; 8 + self.payload.len()];
+
+        buffer[0] = ICMP_TYPE_ECHO_REQUEST;
+        buffer[1] = ICMP_CODE_ECHO_REQUEST;
+        
+        // Byte 2 and 3 are for the Checksum. Leave them as 0x00.
+
+        let id_bytes = self.identifier.to_be_bytes();
+        buffer[4] = id_bytes[0];
+        buffer[5] = id_bytes[1];
+
+        let seq_bytes = self.sequence_number.to_be_bytes();
+        buffer[6] = seq_bytes[0];
+        buffer[7] = seq_bytes[1];
+
+        if !self.payload.is_empty() {
+            buffer[8..].copy_from_slice(&self.payload);
+        }
 
         buffer
     }

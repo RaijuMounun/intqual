@@ -1,13 +1,11 @@
-use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use socket2::{Domain, Protocol, Socket, Type};
 use crate::models::NetworkMetrics;
-use crate::network::icmp::{IcmpEchoRequest, IcmpEchoReply};
+use crate::network::icmp::{DefaultIcmpProvider, IcmpProvider};
 
 /// Core network measurement engine executing a concurrent dual-probing strategy.
 /// 
@@ -111,48 +109,8 @@ impl CoreEngine {
                     
                     // Offload blocking syscalls to Tokio's specialized blocking thread pool.
                     let icmp_ping_result = tokio::task::spawn_blocking(move || {
-                        let icmp_start = Instant::now();
-                        
-                        let socket = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4)) {
-                            Ok(s) => s,
-                            Err(_) => return Err("Permission Denied / Unsupported".to_string()),
-                        };
-
-                        let _ = socket.set_read_timeout(Some(timeout_duration));
-                        let _ = socket.set_write_timeout(Some(timeout_duration));
-
-                        let packet = IcmpEchoRequest::new(icmp_identifier, icmp_seq, vec![]);
-                        let packet_bytes = packet.encode();
-
-                        if socket.send_to(&packet_bytes, &icmp_target.into()).is_err() {
-                            return Err("Send Failed".to_string());
-                        }
-
-                        // Utilize an uninitialized memory array to eliminate the CPU overhead of 
-                        // zeroing out the receive buffer prior to polling.
-                        let mut buf = [MaybeUninit::uninit(); 128];
-                        
-                        // Polling loop: safely drops unrelated alien packets and awaits the matching sequence reply.
-                        loop {
-                            match socket.recv_from(&mut buf) {
-                                Ok((size, _)) => {
-                                    let initialized_buf = unsafe {
-                                        std::slice::from_raw_parts(buf.as_ptr() as *const u8, size)
-                                    };
-
-                                    if let Ok(reply) = IcmpEchoReply::decode(initialized_buf) {
-                                        if reply.sequence_number == icmp_seq {
-                                            return Ok(icmp_start.elapsed().as_secs_f64() * 1000.0);
-                                        }
-                                    }
-
-                                    if icmp_start.elapsed() > timeout_duration {
-                                        return Err("ICMP Timeout".to_string());
-                                    }
-                                },
-                                Err(_) => return Err("ICMP Timeout".to_string()),
-                            }
-                        }
+                        let provider = DefaultIcmpProvider::new(icmp_identifier);
+                        provider.ping(&icmp_target, icmp_seq, timeout_duration)
                     }).await.unwrap_or_else(|_| Err("Thread Panicked".to_string()));
 
                     let timestamp = SystemTime::now()
