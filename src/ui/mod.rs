@@ -12,6 +12,7 @@ use std::io::{stdout, Result};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use crate::models::NetworkMetrics;
+use crate::engine::core_engine::EngineCommand;
 
 /// Defines the maximum number of data points retained in memory for rendering.
 /// 100 perfectly balances the memory footprint with optimal visual data density 
@@ -101,7 +102,7 @@ impl AppState {
 }
 
 /// The main synchronous event loop for the Terminal User Interface.
-pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>) -> Result<()> {
+pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>, _cmd_tx: mpsc::Sender<EngineCommand>) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;

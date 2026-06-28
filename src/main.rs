@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // WHY BOUNDED (100): Implements backpressure. If the UI rendering thread stalls (e.g., OS freeze),
     // the channel won't infinitely expand and cause an OOM (Out Of Memory) crash.
     let (tx, rx) = mpsc::channel(100);
+    let (cmd_tx, cmd_rx) = mpsc::channel::<crate::engine::core_engine::EngineCommand>(10);
 
     // 3. Instantiate the engine with injected configurations.
     // Dependency Injection Keeps the engine pure and testable without hardcoding CLI contexts.
@@ -56,12 +57,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Ignite the async engine in the background (Fire and Forget).
     // The engine will spawn its own detached micro-tasks and asynchronously push data into `tx`.
-    core_engine.start(tx).await;
+    core_engine.start(tx, cmd_rx).await;
 
     // 5. Transfer control of the main OS thread to the UI event loop.
     // WHY: Terminal rendering (crossterm) is inherently synchronous and blocking. 
     // Running it on the main thread ensures stable rendering while Tokio handles I/O in the background.
-    ui::run_app(rx)?;
+    ui::run_app(rx, cmd_tx)?;
 
     Ok(())
 }

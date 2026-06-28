@@ -7,6 +7,13 @@ use tokio::time::Instant;
 use crate::models::NetworkMetrics;
 use crate::network::icmp::{DefaultIcmpProvider, IcmpProvider};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineCommand {
+    Pause,
+    Resume,
+    Stop,
+}
+
 /// Core network measurement engine executing a concurrent dual-probing strategy.
 /// 
 /// It dispatches both TCP Handshake and Unprivileged ICMP Datagram probes simultaneously.
@@ -36,7 +43,7 @@ impl CoreEngine {
     /// Performs pre-flight DNS resolution to ensure DNS lookup latency does not skew 
     /// the TCP handshake metrics. Subsequently, it spawns a detached worker loop that 
     /// dispatches concurrent probes at the specified interval.
-    pub async fn start(self, tx: mpsc::Sender<NetworkMetrics>) {
+    pub async fn start(self, tx: mpsc::Sender<NetworkMetrics>, mut cmd_rx: mpsc::Receiver<EngineCommand>) {
         let addr_string = format!("{}:{}", self.target_ip, self.target_port);
         
         let resolved_addr: SocketAddr = match tokio::net::lookup_host(&addr_string).await {
@@ -63,12 +70,21 @@ impl CoreEngine {
         tokio::spawn(async move {
             let mut sequence_counter: u64 = 0;
             let mut interval_timer = tokio::time::interval(self.interval);
+            let mut is_paused = false;
 
             loop {
-                interval_timer.tick().await;
-                sequence_counter += 1;
+                tokio::select! {
+                    Some(cmd) = cmd_rx.recv() => {
+                        match cmd {
+                            EngineCommand::Pause => is_paused = true,
+                            EngineCommand::Resume => is_paused = false,
+                            EngineCommand::Stop => break,
+                        }
+                    }
+                    _ = interval_timer.tick(), if !is_paused => {
+                        sequence_counter += 1;
 
-                let current_seq = sequence_counter;
+                        let current_seq = sequence_counter;
                 let target_ip_clone = Arc::clone(&self.target_ip);
                 let timeout_duration = self.timeout;
                 let tx_clone = tx.clone();
@@ -128,6 +144,8 @@ impl CoreEngine {
 
                     let _ = tx_clone.send(metrics).await;
                 });
+                    }
+                }
             }
         });
     }
