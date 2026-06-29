@@ -5,7 +5,8 @@ use crossterm::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, LegendPosition, Sparkline},
+    layout::Alignment,
+    widgets::{Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, Paragraph, LegendPosition, Sparkline},
     symbols,
 };
 use std::io::{stdout, Result};
@@ -19,9 +20,16 @@ use crate::engine::core_engine::EngineCommand;
 /// for standard terminal widths, ensuring the sliding window remains legible.
 const HISTORY_SIZE: usize = 100;
 
+#[derive(Debug)]
+pub enum AppMode {
+    Ping,
+    BandwidthTest { current_mbps: f64 },
+}
+
 pub struct AppState {
     pub history: Vec<Option<PingMetrics>>,
     pub latest_sequence: u64,
+    pub mode: AppMode,
 }
 
 /// Manages the volatile view state for the terminal UI.
@@ -37,6 +45,7 @@ impl AppState {
         Self {
             history,
             latest_sequence: 0,
+            mode: AppMode::Ping,
         }
     }
 
@@ -126,7 +135,14 @@ pub fn run_app(mut rx: mpsc::Receiver<TelemetryEvent>, _cmd_tx: mpsc::Sender<Eng
                     app.push_metric(metric);
                     state_changed = true;
                 }
-                TelemetryEvent::Bandwidth(_) => {}
+                TelemetryEvent::Bandwidth(metric) => {
+                    if metric.is_finished {
+                        app.mode = AppMode::Ping;
+                    } else {
+                        app.mode = AppMode::BandwidthTest { current_mbps: metric.download_mbps };
+                    }
+                    state_changed = true;
+                }
             }
         }
 
@@ -166,11 +182,7 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
         .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
         .split(area);
 
-    
-    let right_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(main_layout[1]);
+    let is_bandwidth_test = matches!(app.mode, AppMode::BandwidthTest { .. });
 
     // 2. DATA EXTRACTION
     let mut icmp_data: Vec<(f64, f64)> = Vec::new();
@@ -217,6 +229,11 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
     
     let mut stats_lines = Vec::new();
 
+    if is_bandwidth_test {
+        stats_lines.push(Line::from(vec![Span::styled("[TESTING BANDWIDTH...]", Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD))]));
+        stats_lines.push(Line::from(""));
+    }
+
     if app.latest_sequence == 0 {
         stats_lines.push(Line::from("  Waiting for data..."));
     } else if let Some(ref metric) = app.history[latest_idx] {
@@ -229,35 +246,46 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
             Err(e) => e.clone(),
         };
         
+        let (icmp_color, tcp_color, jitter_style, loss_style) = if is_bandwidth_test {
+            let gray = Style::default().fg(Color::DarkGray);
+            (gray, gray, gray, gray)
+        } else {
+            let j_style = if jitter > 20.0 {
+                Style::default().fg(Color::LightYellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)
+            };
+            
+            let l_style = if loss_pct > 0.0 {
+                Style::default().fg(Color::Black).bg(Color::LightRed).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            };
+            
+            (
+                Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD),
+                j_style,
+                l_style
+            )
+        };
+
         stats_lines.push(Line::from(vec![Span::styled(" Target:", Style::default().fg(Color::DarkGray))]));
         stats_lines.push(Line::from(vec![Span::styled(format!(" {}", metric.target_ip), Style::default().add_modifier(Modifier::BOLD))]));
         stats_lines.push(Line::from(""));
 
         stats_lines.push(Line::from(vec![Span::styled(" ICMP Ping (Network):", Style::default().fg(Color::DarkGray))]));
-        stats_lines.push(Line::from(vec![Span::styled(format!(" {}", icmp_str), Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD))]));
+        stats_lines.push(Line::from(vec![Span::styled(format!(" {}", icmp_str), icmp_color)]));
         stats_lines.push(Line::from(""));
 
         stats_lines.push(Line::from(vec![Span::styled(" TCP Ping (App Layer):", Style::default().fg(Color::DarkGray))]));
-        stats_lines.push(Line::from(vec![Span::styled(format!(" {}", tcp_str), Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD))]));
+        stats_lines.push(Line::from(vec![Span::styled(format!(" {}", tcp_str), tcp_color)]));
         stats_lines.push(Line::from(""));
 
-        // DYNAMIC ALARM: Moderate instability warning threshold (20ms)
-        let jitter_style = if jitter > 20.0 {
-            Style::default().fg(Color::LightYellow).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)
-        };
         stats_lines.push(Line::from(vec![Span::styled(" Jitter (Stability):", Style::default().fg(Color::DarkGray))]));
         stats_lines.push(Line::from(vec![Span::styled(format!(" {:.1} ms", jitter), jitter_style)]));
         stats_lines.push(Line::from(""));
 
-        // DYNAMIC ALARM: Catastrophic failure detection
-        // Inverting colors (Red BG/Black Text) creates an immediate, unignorable visual pop.
-        let loss_style = if loss_pct > 0.0 {
-            Style::default().fg(Color::Black).bg(Color::LightRed).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-        };
         stats_lines.push(Line::from(vec![Span::styled(" Pkt Loss (Survival):", Style::default().fg(Color::DarkGray))]));
         stats_lines.push(Line::from(vec![Span::styled(format!(" {:.1}%", loss_pct), loss_style)]));
         stats_lines.push(Line::from(""));
@@ -270,52 +298,87 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
 
     frame.render_widget(stats_block, main_layout[0]);
 
-    // 4. RIGHT TOP PANEL (Latency Lines)
-    let datasets = vec![
-        Dataset::default()
-            .name("TCP (App)")
-            .marker(symbols::Marker::Braille)
-            .graph_type(GraphType::Line)
-            .style(Style::default().fg(Color::DarkGray))
-            .data(&tcp_data),
-        Dataset::default()
-            .name("ICMP (Ping)")
-            .marker(symbols::Marker::Braille)
-            .graph_type(GraphType::Line)
-            .style(Style::default().fg(Color::LightCyan))
-            .data(&icmp_data),
-    ];
+    // 4 & 5. RIGHT COLUMN (Contextual Swap)
+    match app.mode {
+        AppMode::Ping => {
+            let right_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+                .split(main_layout[1]);
 
-    let x_bounds = [start_seq as f64, app.latest_sequence as f64];
-    let y_bounds = [0.0, max_ping * 1.1]; 
+            let datasets = vec![
+                Dataset::default()
+                    .name("TCP (App)")
+                    .marker(symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::DarkGray))
+                    .data(&tcp_data),
+                Dataset::default()
+                    .name("ICMP (Ping)")
+                    .marker(symbols::Marker::Braille)
+                    .graph_type(GraphType::Line)
+                    .style(Style::default().fg(Color::LightCyan))
+                    .data(&icmp_data),
+            ];
 
-    let chart = Chart::new(datasets)
-        .block(Block::default().title(" Latency History (ms) [Exit: Q] ").borders(Borders::ALL).border_style(Style::default().fg(Color::LightCyan)))
-        .x_axis(Axis::default().style(Style::default().fg(Color::DarkGray)).bounds(x_bounds))
-        .y_axis(
-            Axis::default()
-                .title("ms")
-                .style(Style::default().fg(Color::DarkGray))
-                .bounds(y_bounds)
-                .labels(vec![
-                    Span::raw("0"),
-                    Span::raw(format!("{:.0}", max_ping / 2.0)),
-                    Span::raw(format!("{:.0}", max_ping)),
-                ]),
-        )
-        .legend_position(Some(LegendPosition::TopLeft));
+            let x_bounds = [start_seq as f64, app.latest_sequence as f64];
+            let y_bounds = [0.0, max_ping * 1.1]; 
 
-    frame.render_widget(chart, right_layout[0]);
+            let chart = Chart::new(datasets)
+                .block(Block::default().title(" Latency History (ms) [Exit: Q] ").borders(Borders::ALL).border_style(Style::default().fg(Color::LightCyan)))
+                .x_axis(Axis::default().style(Style::default().fg(Color::DarkGray)).bounds(x_bounds))
+                .y_axis(
+                    Axis::default()
+                        .title("ms")
+                        .style(Style::default().fg(Color::DarkGray))
+                        .bounds(y_bounds)
+                        .labels(vec![
+                            Span::raw("0"),
+                            Span::raw(format!("{:.0}", max_ping / 2.0)),
+                            Span::raw(format!("{:.0}", max_ping)),
+                        ]),
+                )
+                .legend_position(Some(LegendPosition::TopLeft));
 
-    // 5. RIGHT BOTTOM PANEL (Gestalt Jitter Sparkline)
-    // WHY Gestalt: Differentiating the form factor (Lines for latency, Bars for jitter) 
-    // prevents cognitive overload while keeping their X-axes perfectly synced vertically.
-    let jitter_color = if jitter > 20.0 { Color::LightYellow } else { Color::Magenta };
-    
-    let jitter_sparkline = Sparkline::default()
-        .block(Block::default().title(" Jitter Deviation Trend (Gestalt Bar Chart) ").borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)))
-        .data(&jitter_history)
-        .style(Style::default().fg(jitter_color));
+            frame.render_widget(chart, right_layout[0]);
 
-    frame.render_widget(jitter_sparkline, right_layout[1]);
+            let jitter_color = if jitter > 20.0 { Color::LightYellow } else { Color::Magenta };
+            
+            let jitter_sparkline = Sparkline::default()
+                .block(Block::default().title(" Jitter Deviation Trend (Gestalt Bar Chart) ").borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)))
+                .data(&jitter_history)
+                .style(Style::default().fg(jitter_color));
+
+            frame.render_widget(jitter_sparkline, right_layout[1]);
+        }
+        AppMode::BandwidthTest { current_mbps } => {
+            let right_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(40),
+                    Constraint::Length(5), // Make room for title + big text
+                    Constraint::Length(3), // Gauge
+                    Constraint::Percentage(40),
+                ])
+                .split(main_layout[1]);
+
+            let typography = Paragraph::new(Text::from(vec![
+                Line::from(vec![Span::styled(
+                    format!("{:.1} Mbps", current_mbps),
+                    Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD),
+                )]),
+            ]))
+            .alignment(Alignment::Center)
+            .block(Block::default().title(" Bandwidth Test Active ").borders(Borders::ALL));
+
+            frame.render_widget(typography, right_layout[1]);
+
+            let gauge = Gauge::default()
+                .block(Block::default().borders(Borders::ALL).title(" Downloading... "))
+                .gauge_style(Style::default().fg(Color::LightCyan).bg(Color::DarkGray))
+                .percent(50); // Pulsing or indeterminate feel if Ratatui allows, for now 50%.
+
+            frame.render_widget(gauge, right_layout[2]);
+        }
+    }
 }
