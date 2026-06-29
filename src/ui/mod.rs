@@ -111,7 +111,7 @@ impl AppState {
 }
 
 /// The main synchronous event loop for the Terminal User Interface.
-pub fn run_app(mut rx: mpsc::Receiver<TelemetryEvent>, _cmd_tx: mpsc::Sender<EngineCommand>) -> Result<()> {
+pub fn run_app(mut rx: mpsc::Receiver<TelemetryEvent>, cmd_tx: mpsc::Sender<EngineCommand>, tx: mpsc::Sender<TelemetryEvent>) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -156,6 +156,23 @@ pub fn run_app(mut rx: mpsc::Receiver<TelemetryEvent>, _cmd_tx: mpsc::Sender<Eng
                 Event::Key(key) => {
                     if key.code == KeyCode::Char('q') {
                         break;
+                    } else if key.code == KeyCode::Char('s') {
+                        if !matches!(app.mode, AppMode::BandwidthTest { .. }) {
+                            let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Pause);
+                            
+                            let tx_clone = tx.clone();
+                            let cmd_tx_clone = cmd_tx.clone();
+                            
+                            tokio::runtime::Handle::current().spawn(async move {
+                                let _ = crate::network::bandwidth::BandwidthEngine::test_download(
+                                    "speed.cloudflare.com", 
+                                    "/__down?bytes=25000000", 
+                                    tx_clone
+                                ).await;
+
+                                let _ = cmd_tx_clone.send(crate::engine::core_engine::EngineCommand::Resume).await;
+                            });
+                        }
                     }
                 }
                 Event::Resize(_, _) => {
