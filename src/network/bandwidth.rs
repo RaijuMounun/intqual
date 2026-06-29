@@ -5,11 +5,13 @@ use tokio::time::Instant;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 use rustls_pki_types::ServerName;
-
+use crate::models::{BandwidthMetrics, TelemetryEvent};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::mpsc;
 pub struct BandwidthEngine;
 
 impl BandwidthEngine {
-    pub async fn test_download(target_host: &str, target_path: &str) -> Result<f64, String> {
+    pub async fn test_download(target_host: &str, target_path: &str, tx: mpsc::Sender<TelemetryEvent>) -> Result<(), String> {
         let mut root_store = RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let config = ClientConfig::builder()
@@ -41,24 +43,59 @@ impl BandwidthEngine {
             .map_err(|e| format!("Failed to send request: {}", e))?;
 
         let mut buffer = [0u8; 8192];
-        let mut bytes_received: usize = 0;
+        let total_bytes = Arc::new(AtomicUsize::new(0));
+        let bytes_clone = total_bytes.clone();
         let start_time = Instant::now();
+        let tx_reporter = tx.clone();
+
+        let reporter = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+            loop {
+                interval.tick().await;
+                let bytes = bytes_clone.load(Ordering::Relaxed);
+                let elapsed = start_time.elapsed().as_secs_f64();
+                if elapsed > 0.0 {
+                    let speed_mbps = ((bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
+                    let event = TelemetryEvent::Bandwidth(BandwidthMetrics {
+                        download_mbps: speed_mbps,
+                        is_finished: false,
+                    });
+                    if tx_reporter.send(event).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
 
         loop {
             match tls_stream.read(&mut buffer).await {
                 Ok(0) => break,
-                Ok(n) => bytes_received += n,
-                Err(e) => return Err(format!("Error reading from stream: {}", e)),
+                Ok(n) => {
+                    total_bytes.fetch_add(n, Ordering::Relaxed);
+                },
+                Err(e) => {
+                    reporter.abort();
+                    return Err(format!("Error reading from stream: {}", e));
+                },
             }
         }
+
+        reporter.abort();
 
         let elapsed = start_time.elapsed().as_secs_f64();
         if elapsed == 0.0 {
             return Err("Elapsed time is zero".to_string());
         }
 
-        let speed_mbps = ((bytes_received as f64 * 8.0) / 1_000_000.0) / elapsed;
+        let final_bytes = total_bytes.load(Ordering::Relaxed);
+        let speed_mbps = ((final_bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
 
-        Ok(speed_mbps)
+        let final_event = TelemetryEvent::Bandwidth(BandwidthMetrics {
+            download_mbps: speed_mbps,
+            is_finished: true,
+        });
+        let _ = tx.send(final_event).await;
+
+        Ok(())
     }
 }

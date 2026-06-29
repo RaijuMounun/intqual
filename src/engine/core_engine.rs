@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use crate::models::NetworkMetrics;
+use crate::models::{PingMetrics, TelemetryEvent};
 use crate::network::icmp::{DefaultIcmpProvider, IcmpProvider};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +43,7 @@ impl CoreEngine {
     /// Performs pre-flight DNS resolution to ensure DNS lookup latency does not skew 
     /// the TCP handshake metrics. Subsequently, it spawns a detached worker loop that 
     /// dispatches concurrent probes at the specified interval.
-    pub async fn start(self, tx: mpsc::Sender<NetworkMetrics>, mut cmd_rx: mpsc::Receiver<EngineCommand>) {
+    pub async fn start(self, tx: mpsc::Sender<TelemetryEvent>, mut cmd_rx: mpsc::Receiver<EngineCommand>) {
         let addr_string = format!("{}:{}", self.target_ip, self.target_port);
         
         let resolved_addr: SocketAddr = match tokio::net::lookup_host(&addr_string).await {
@@ -134,7 +134,7 @@ impl CoreEngine {
                         .unwrap_or(Duration::from_secs(0))
                         .as_secs();
 
-                    let metrics = NetworkMetrics {
+                    let metrics = PingMetrics {
                         sequence_number: current_seq,
                         target_ip: target_ip_clone.to_string(),
                         icmp_ping: icmp_ping_result,
@@ -142,7 +142,7 @@ impl CoreEngine {
                         timestamp,
                     };
 
-                    let _ = tx_clone.send(metrics).await;
+                    let _ = tx_clone.send(TelemetryEvent::Ping(metrics)).await;
                 });
                     }
                 }

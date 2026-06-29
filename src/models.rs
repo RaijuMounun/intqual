@@ -3,7 +3,7 @@
 /// we ensure thread-safety and allow future extensions (like writing metrics to a database or REST API)
 /// without altering the core engine mechanics.
 #[derive(Debug)]
-pub struct NetworkMetrics {
+pub struct PingMetrics {
     /// Incremental ID of the measurement tick.
     /// Network environments are chaotic (especially UDP/ICMP). Packets arrive out-of-order. 
     /// The UI relies on this sequence to correctly index data points on the sliding window charts,
@@ -28,4 +28,16 @@ pub struct NetworkMetrics {
     /// for historical data logging (e.g., exporting to CSV/JSON) or cross-referencing 
     /// network outages with external system logs.
     pub timestamp: u64,
+}
+
+#[derive(Debug)]
+pub struct BandwidthMetrics {
+    pub download_mbps: f64,
+    pub is_finished: bool,
+}
+
+#[derive(Debug)]
+pub enum TelemetryEvent {
+    Ping(PingMetrics),
+    Bandwidth(BandwidthMetrics),
 }

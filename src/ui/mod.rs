@@ -11,7 +11,7 @@ use ratatui::{
 use std::io::{stdout, Result};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use crate::models::NetworkMetrics;
+use crate::models::{PingMetrics, TelemetryEvent};
 use crate::engine::core_engine::EngineCommand;
 
 /// Defines the maximum number of data points retained in memory for rendering.
@@ -20,7 +20,7 @@ use crate::engine::core_engine::EngineCommand;
 const HISTORY_SIZE: usize = 100;
 
 pub struct AppState {
-    pub history: Vec<Option<NetworkMetrics>>,
+    pub history: Vec<Option<PingMetrics>>,
     pub latest_sequence: u64,
 }
 
@@ -41,7 +41,7 @@ impl AppState {
     }
 
     /// Ingests a new metric into the ring buffer.
-    pub fn push_metric(&mut self, metric: NetworkMetrics) {
+    pub fn push_metric(&mut self, metric: PingMetrics) {
         if metric.sequence_number > self.latest_sequence {
             self.latest_sequence = metric.sequence_number;
         }
@@ -102,7 +102,7 @@ impl AppState {
 }
 
 /// The main synchronous event loop for the Terminal User Interface.
-pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>, _cmd_tx: mpsc::Sender<EngineCommand>) -> Result<()> {
+pub fn run_app(mut rx: mpsc::Receiver<TelemetryEvent>, _cmd_tx: mpsc::Sender<EngineCommand>) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -120,9 +120,14 @@ pub fn run_app(mut rx: mpsc::Receiver<NetworkMetrics>, _cmd_tx: mpsc::Sender<Eng
         // a draw command if new data has actively altered the state.
         let mut state_changed = false;
 
-        while let Ok(metric) = rx.try_recv() {
-            app.push_metric(metric);
-            state_changed = true;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                TelemetryEvent::Ping(metric) => {
+                    app.push_metric(metric);
+                    state_changed = true;
+                }
+                TelemetryEvent::Bandwidth(_) => {}
+            }
         }
 
         if state_changed {

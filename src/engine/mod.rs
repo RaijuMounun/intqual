@@ -1,6 +1,6 @@
 pub mod core_engine;
 
-use crate::models::NetworkMetrics;
+use crate::models::TelemetryEvent;
 use std::sync::mpsc;
 
 /// The core contract for network engine implementations.
@@ -12,7 +12,7 @@ pub trait NetworkEngine {
     /// 
     /// The engine spawns background tasks and continuously streams measurement results 
     /// back to the provided MPSC transmission channel.
-    fn start(self, tx: mpsc::Sender<NetworkMetrics>) -> impl std::future::Future<Output = ()> + Send;
+    fn start(self, tx: mpsc::Sender<TelemetryEvent>) -> impl std::future::Future<Output = ()> + Send;
 }
 
 pub use core_engine::CoreEngine;
