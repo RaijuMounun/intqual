@@ -112,7 +112,7 @@ impl BandwidthEngine {
             .map_err(|e| format!("TLS handshake failed for upload: {}", e))?;
 
         let up_request = format!(
-            "POST /__up HTTP/1.1\r\nHost: {}\r\nContent-Length: 250000000\r\n\r\n",
+            "POST /__up HTTP/1.1\r\nHost: {}\r\nContent-Length: 50000000\r\n\r\n",
             target_host
         );
         tls_stream_up

@@ -210,7 +210,7 @@ pub fn run_app(
                             let handle = tokio::runtime::Handle::current().spawn(async move {
                                 let _ = crate::network::bandwidth::BandwidthEngine::test_download(
                                     "speed.cloudflare.com",
-                                    "/__down?bytes=250000000",
+                                    "/__down?bytes=50000000",
                                     tx_clone,
                                 )
                                 .await;
