@@ -1,40 +1,54 @@
+use crate::engine::core_engine::EngineCommand;
+use crate::models::{PingMetrics, TelemetryEvent};
 use crossterm::{
-    event::{self, Event, KeyCode},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
+    event::{self, Event, KeyCode},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
-    prelude::*,
     layout::Alignment,
-    widgets::{Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, Paragraph, LegendPosition, Sparkline},
+    prelude::*,
     symbols,
+    widgets::{
+        Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, LegendPosition, Paragraph,
+        Sparkline,
+    },
 };
-use std::io::{stdout, Result};
+use std::io::{Result, stdout};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use crate::models::{PingMetrics, TelemetryEvent};
-use crate::engine::core_engine::EngineCommand;
+use tui_big_text::{BigText, PixelSize};
 
 /// Defines the maximum number of data points retained in memory for rendering.
-/// 100 perfectly balances the memory footprint with optimal visual data density 
+/// 100 perfectly balances the memory footprint with optimal visual data density
 /// for standard terminal widths, ensuring the sliding window remains legible.
 const HISTORY_SIZE: usize = 100;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum AppMode {
     Ping,
-    BandwidthTest { current_mbps: f64 },
+    BandwidthTesting {
+        phase: &'static str,
+        current_mbps: f64,
+        progress: f64,
+    },
+    BandwidthFinished {
+        down_mbps: f64,
+        up_mbps: f64,
+    },
 }
 
 pub struct AppState {
     pub history: Vec<Option<PingMetrics>>,
     pub latest_sequence: u64,
     pub mode: AppMode,
+    pub last_speed_test: Option<(f64, f64)>, // (Down, Up)
+    pub active_test_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Manages the volatile view state for the terminal UI.
-/// By isolating the view state (history, sequence tracking) from the CoreEngine, 
-/// the engine remains completely stateless and pure, avoiding complex lock-contention 
+/// By isolating the view state (history, sequence tracking) from the CoreEngine,
+/// the engine remains completely stateless and pure, avoiding complex lock-contention
 /// between the async I/O reactor and the synchronous rendering thread.
 impl AppState {
     pub fn new() -> Self {
@@ -46,6 +60,8 @@ impl AppState {
             history,
             latest_sequence: 0,
             mode: AppMode::Ping,
+            last_speed_test: None,
+            active_test_task: None,
         }
     }
 
@@ -59,25 +75,25 @@ impl AppState {
     }
 
     /// Computes diagnostic aggregations (Packet Loss, Avg Jitter) dynamically.
-    /// O(N) Compute: Calculating stats on-the-fly during the render loop is intentionally 
-    /// chosen over maintaining stateful counters. It guarantees mathematical accuracy based 
+    /// O(N) Compute: Calculating stats on-the-fly during the render loop is intentionally
+    /// chosen over maintaining stateful counters. It guarantees mathematical accuracy based
     /// strictly on the visible window and eliminates memory duplication overhead.
     pub fn calculate_stats(&self) -> (f64, f64) {
         let mut loss_count = 0;
         let mut total_count = 0;
-        
+
         let mut last_ping: Option<f64> = None;
         let mut jitter_sum = 0.0;
         let mut jitter_count = 0;
 
         let start_seq = self.latest_sequence.saturating_sub(HISTORY_SIZE as u64);
-        
+
         for seq in start_seq..=self.latest_sequence {
             let idx = (seq % HISTORY_SIZE as u64) as usize;
             if let Some(ref metric) = self.history[idx] {
                 if metric.sequence_number == seq {
                     total_count += 1;
-                    
+
                     match metric.icmp_ping {
                         Ok(ping) => {
                             if let Some(last) = last_ping {
@@ -94,16 +110,16 @@ impl AppState {
             }
         }
 
-        let loss_pct = if total_count > 0 { 
-            (loss_count as f64 / total_count as f64) * 100.0 
-        } else { 
-            0.0 
+        let loss_pct = if total_count > 0 {
+            (loss_count as f64 / total_count as f64) * 100.0
+        } else {
+            0.0
         };
-        
-        let avg_jitter = if jitter_count > 0 { 
-            jitter_sum / jitter_count as f64 
-        } else { 
-            0.0 
+
+        let avg_jitter = if jitter_count > 0 {
+            jitter_sum / jitter_count as f64
+        } else {
+            0.0
         };
 
         (loss_pct, avg_jitter)
@@ -111,7 +127,11 @@ impl AppState {
 }
 
 /// The main synchronous event loop for the Terminal User Interface.
-pub fn run_app(mut rx: mpsc::Receiver<TelemetryEvent>, cmd_tx: mpsc::Sender<EngineCommand>, tx: mpsc::Sender<TelemetryEvent>) -> Result<()> {
+pub fn run_app(
+    mut rx: mpsc::Receiver<TelemetryEvent>,
+    cmd_tx: mpsc::Sender<EngineCommand>,
+    tx: mpsc::Sender<TelemetryEvent>,
+) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -124,8 +144,8 @@ pub fn run_app(mut rx: mpsc::Receiver<TelemetryEvent>, cmd_tx: mpsc::Sender<Engi
     // THE IMMEDIATE-MODE GUI LOOP
     loop {
         // Dirty Flag: Terminates redundant GPU/Compositor rendering.
-        // Re-rendering 60+ FPS in a terminal causes severe compositor timeouts 
-        // (e.g., KDE KWin, WebGL environments) and CPU spikes. We strictly only issue 
+        // Re-rendering 60+ FPS in a terminal causes severe compositor timeouts
+        // (e.g., KDE KWin, WebGL environments) and CPU spikes. We strictly only issue
         // a draw command if new data has actively altered the state.
         let mut state_changed = false;
 
@@ -136,10 +156,34 @@ pub fn run_app(mut rx: mpsc::Receiver<TelemetryEvent>, cmd_tx: mpsc::Sender<Engi
                     state_changed = true;
                 }
                 TelemetryEvent::Bandwidth(metric) => {
+                    if app.active_test_task.is_none() {
+                        continue;
+                    }
+
                     if metric.is_finished {
-                        app.mode = AppMode::Ping;
+                        app.mode = AppMode::BandwidthFinished {
+                            down_mbps: metric.download_mbps,
+                            up_mbps: metric.upload_mbps.unwrap_or(0.0),
+                        };
+                        app.last_speed_test =
+                            Some((metric.download_mbps, metric.upload_mbps.unwrap_or(0.0)));
+                        app.active_test_task = None;
                     } else {
-                        app.mode = AppMode::BandwidthTest { current_mbps: metric.download_mbps };
+                        let phase = if metric.is_upload {
+                            "Upload"
+                        } else {
+                            "Download"
+                        };
+                        let current = if metric.is_upload {
+                            metric.upload_mbps.unwrap_or(0.0)
+                        } else {
+                            metric.download_mbps
+                        };
+                        app.mode = AppMode::BandwidthTesting {
+                            phase,
+                            current_mbps: current,
+                            progress: metric.progress_percentage,
+                        };
                     }
                     state_changed = true;
                 }
@@ -157,21 +201,36 @@ pub fn run_app(mut rx: mpsc::Receiver<TelemetryEvent>, cmd_tx: mpsc::Sender<Engi
                     if key.code == KeyCode::Char('q') {
                         break;
                     } else if key.code == KeyCode::Char('s') {
-                        if !matches!(app.mode, AppMode::BandwidthTest { .. }) {
-                            let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Pause);
-                            
-                            let tx_clone = tx.clone();
-                            let cmd_tx_clone = cmd_tx.clone();
-                            
-                            tokio::runtime::Handle::current().spawn(async move {
-                                let _ = crate::network::bandwidth::BandwidthEngine::test_download(
-                                    "speed.cloudflare.com", 
-                                    "/__down?bytes=25000000", 
-                                    tx_clone
-                                ).await;
+                        if !matches!(app.mode, AppMode::BandwidthTesting { .. }) {
+                            let _ =
+                                cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Pause);
 
-                                let _ = cmd_tx_clone.send(crate::engine::core_engine::EngineCommand::Resume).await;
+                            let tx_clone = tx.clone();
+
+                            let handle = tokio::runtime::Handle::current().spawn(async move {
+                                let _ = crate::network::bandwidth::BandwidthEngine::test_download(
+                                    "speed.cloudflare.com",
+                                    "/__down?bytes=25000000",
+                                    tx_clone,
+                                )
+                                .await;
                             });
+                            app.active_test_task = Some(handle);
+                        }
+                    } else if key.code == KeyCode::Esc {
+                        if matches!(app.mode, AppMode::BandwidthTesting { .. }) {
+                            if let Some(handle) = app.active_test_task.take() {
+                                handle.abort();
+                            }
+                            app.mode = AppMode::Ping;
+                            let _ =
+                                cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume);
+                        }
+                    } else if key.code == KeyCode::Enter {
+                        if matches!(app.mode, AppMode::BandwidthFinished { .. }) {
+                            app.mode = AppMode::Ping;
+                            let _ =
+                                cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume);
                         }
                     }
                 }
@@ -193,30 +252,56 @@ pub fn run_app(mut rx: mpsc::Receiver<TelemetryEvent>, cmd_tx: mpsc::Sender<Engi
 fn draw_ui(frame: &mut Frame, app: &AppState) {
     let area = frame.area();
 
-    // 1. MACRO LAYOUT (F-Pattern)
+    let screen_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
+
     let main_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
-        .split(area);
+        .split(screen_layout[1]);
 
-    let is_bandwidth_test = matches!(app.mode, AppMode::BandwidthTest { .. });
+    let is_testing = matches!(app.mode, AppMode::BandwidthTesting { .. });
+    let is_finished = matches!(app.mode, AppMode::BandwidthFinished { .. });
+    let is_testing_or_finished = is_testing || is_finished;
+
+    let nav_text = if is_testing {
+        "[Q: Quit] | [Esc: Cancel Test]"
+    } else if is_finished {
+        "[Q: Quit] | [Enter: Return to Ping]"
+    } else {
+        "[Q: Quit] | [S: Speed Test]"
+    };
+
+    let top_bar = Paragraph::new(nav_text)
+        .style(
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .alignment(Alignment::Right);
+
+    frame.render_widget(top_bar, screen_layout[0]);
 
     // 2. DATA EXTRACTION
     let mut icmp_data: Vec<(f64, f64)> = Vec::new();
     let mut tcp_data: Vec<(f64, f64)> = Vec::new();
     let mut jitter_history: Vec<u64> = Vec::new();
-    let mut max_ping: f64 = 50.0; 
+    let mut max_ping: f64 = 50.0;
 
     let start_seq = app.latest_sequence.saturating_sub(HISTORY_SIZE as u64);
     let mut last_icmp_ping: Option<f64> = None;
-    
+
     for seq in start_seq..=app.latest_sequence {
         let idx = (seq % HISTORY_SIZE as u64) as usize;
         if let Some(ref metric) = app.history[idx] {
             if metric.sequence_number == seq {
                 if let Ok(ping) = metric.icmp_ping {
                     icmp_data.push((seq as f64, ping));
-                    if ping > max_ping { max_ping = ping; }
+                    if ping > max_ping {
+                        max_ping = ping;
+                    }
 
                     if let Some(last) = last_icmp_ping {
                         let j = (ping - last).abs();
@@ -232,7 +317,9 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
 
                 if let Ok(ping) = metric.tcp_ping {
                     tcp_data.push((seq as f64, ping));
-                    if ping > max_ping { max_ping = ping; }
+                    if ping > max_ping {
+                        max_ping = ping;
+                    }
                 }
             }
         } else {
@@ -243,11 +330,24 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
     // 3. LEFT COLUMN (Actionable Metrics & Alarms)
     let (loss_pct, jitter) = app.calculate_stats();
     let latest_idx = (app.latest_sequence % HISTORY_SIZE as u64) as usize;
-    
+
     let mut stats_lines = Vec::new();
 
-    if is_bandwidth_test {
-        stats_lines.push(Line::from(vec![Span::styled("[TESTING BANDWIDTH...]", Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD))]));
+    if is_testing {
+        stats_lines.push(Line::from(vec![Span::styled(
+            "[TESTING BANDWIDTH...]",
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        stats_lines.push(Line::from(""));
+    } else if is_finished {
+        stats_lines.push(Line::from(vec![Span::styled(
+            "[TEST FINISHED]",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )]));
         stats_lines.push(Line::from(""));
     }
 
@@ -262,56 +362,122 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
             Ok(ms) => format!("{:.1} ms", ms),
             Err(e) => e.clone(),
         };
-        
-        let (icmp_color, tcp_color, jitter_style, loss_style) = if is_bandwidth_test {
+
+        let (icmp_color, tcp_color, jitter_style, loss_style) = if is_testing_or_finished {
             let gray = Style::default().fg(Color::DarkGray);
             (gray, gray, gray, gray)
         } else {
             let j_style = if jitter > 20.0 {
-                Style::default().fg(Color::LightYellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::LightYellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD)
             };
-            
+
             let l_style = if loss_pct > 0.0 {
-                Style::default().fg(Color::Black).bg(Color::LightRed).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
             };
-            
+
             (
-                Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD),
-                Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Gray)
+                    .add_modifier(Modifier::BOLD),
                 j_style,
-                l_style
+                l_style,
             )
         };
 
-        stats_lines.push(Line::from(vec![Span::styled(" Target:", Style::default().fg(Color::DarkGray))]));
-        stats_lines.push(Line::from(vec![Span::styled(format!(" {}", metric.target_ip), Style::default().add_modifier(Modifier::BOLD))]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            " Target:",
+            Style::default().fg(Color::DarkGray),
+        )]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            format!(" {}", metric.target_ip),
+            Style::default().add_modifier(Modifier::BOLD),
+        )]));
         stats_lines.push(Line::from(""));
 
-        stats_lines.push(Line::from(vec![Span::styled(" ICMP Ping (Network):", Style::default().fg(Color::DarkGray))]));
-        stats_lines.push(Line::from(vec![Span::styled(format!(" {}", icmp_str), icmp_color)]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            " ICMP Ping (Network):",
+            Style::default().fg(Color::DarkGray),
+        )]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            format!(" {}", icmp_str),
+            icmp_color,
+        )]));
         stats_lines.push(Line::from(""));
 
-        stats_lines.push(Line::from(vec![Span::styled(" TCP Ping (App Layer):", Style::default().fg(Color::DarkGray))]));
-        stats_lines.push(Line::from(vec![Span::styled(format!(" {}", tcp_str), tcp_color)]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            " TCP Ping (App Layer):",
+            Style::default().fg(Color::DarkGray),
+        )]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            format!(" {}", tcp_str),
+            tcp_color,
+        )]));
         stats_lines.push(Line::from(""));
 
-        stats_lines.push(Line::from(vec![Span::styled(" Jitter (Stability):", Style::default().fg(Color::DarkGray))]));
-        stats_lines.push(Line::from(vec![Span::styled(format!(" {:.1} ms", jitter), jitter_style)]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            " Jitter (Stability):",
+            Style::default().fg(Color::DarkGray),
+        )]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            format!(" {:.1} ms", jitter),
+            jitter_style,
+        )]));
         stats_lines.push(Line::from(""));
 
-        stats_lines.push(Line::from(vec![Span::styled(" Pkt Loss (Survival):", Style::default().fg(Color::DarkGray))]));
-        stats_lines.push(Line::from(vec![Span::styled(format!(" {:.1}%", loss_pct), loss_style)]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            " Pkt Loss (Survival):",
+            Style::default().fg(Color::DarkGray),
+        )]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            format!(" {:.1}%", loss_pct),
+            loss_style,
+        )]));
         stats_lines.push(Line::from(""));
 
-        stats_lines.push(Line::from(vec![Span::styled(format!(" Seq ID: {}", metric.sequence_number), Style::default().fg(Color::DarkGray))]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            format!(" Seq ID: {}", metric.sequence_number),
+            Style::default().fg(Color::DarkGray),
+        )]));
     }
 
-    let stats_block = Paragraph::new(Text::from(stats_lines))
-        .block(Block::default().title(" Live Metrics ").borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)));
+    if let Some((down, up)) = app.last_speed_test {
+        stats_lines.push(Line::from(""));
+        stats_lines.push(Line::from(vec![Span::styled(
+            " Last Speed Test:",
+            Style::default().fg(Color::DarkGray),
+        )]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            format!(" Down: {:.1} Mbps", down),
+            Style::default().fg(Color::LightCyan),
+        )]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            format!(" Up:   {:.1} Mbps", up),
+            Style::default().fg(Color::LightMagenta),
+        )]));
+    }
+
+    let stats_block = Paragraph::new(Text::from(stats_lines)).block(
+        Block::default()
+            .title(" Live Metrics ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
 
     frame.render_widget(stats_block, main_layout[0]);
 
@@ -339,11 +505,20 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
             ];
 
             let x_bounds = [start_seq as f64, app.latest_sequence as f64];
-            let y_bounds = [0.0, max_ping * 1.1]; 
+            let y_bounds = [0.0, max_ping * 1.1];
 
             let chart = Chart::new(datasets)
-                .block(Block::default().title(" Latency History (ms) [Exit: Q] ").borders(Borders::ALL).border_style(Style::default().fg(Color::LightCyan)))
-                .x_axis(Axis::default().style(Style::default().fg(Color::DarkGray)).bounds(x_bounds))
+                .block(
+                    Block::default()
+                        .title(" Latency History (ms) ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::LightCyan)),
+                )
+                .x_axis(
+                    Axis::default()
+                        .style(Style::default().fg(Color::DarkGray))
+                        .bounds(x_bounds),
+                )
                 .y_axis(
                     Axis::default()
                         .title("ms")
@@ -359,43 +534,149 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
 
             frame.render_widget(chart, right_layout[0]);
 
-            let jitter_color = if jitter > 20.0 { Color::LightYellow } else { Color::Magenta };
-            
+            let jitter_color = if jitter > 20.0 {
+                Color::LightYellow
+            } else {
+                Color::Magenta
+            };
+
             let jitter_sparkline = Sparkline::default()
-                .block(Block::default().title(" Jitter Deviation Trend (Gestalt Bar Chart) ").borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray)))
+                .block(
+                    Block::default()
+                        .title(" Jitter Deviation Trend ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray)),
+                )
                 .data(&jitter_history)
                 .style(Style::default().fg(jitter_color));
 
             frame.render_widget(jitter_sparkline, right_layout[1]);
         }
-        AppMode::BandwidthTest { current_mbps } => {
-            let right_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Percentage(40),
-                    Constraint::Length(5), // Make room for title + big text
-                    Constraint::Length(3), // Gauge
-                    Constraint::Percentage(40),
-                ])
-                .split(main_layout[1]);
-
-            let typography = Paragraph::new(Text::from(vec![
-                Line::from(vec![Span::styled(
-                    format!("{:.1} Mbps", current_mbps),
-                    Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD),
-                )]),
-            ]))
-            .alignment(Alignment::Center)
-            .block(Block::default().title(" Bandwidth Test Active ").borders(Borders::ALL));
-
-            frame.render_widget(typography, right_layout[1]);
-
-            let gauge = Gauge::default()
-                .block(Block::default().borders(Borders::ALL).title(" Downloading... "))
-                .gauge_style(Style::default().fg(Color::LightCyan).bg(Color::DarkGray))
-                .percent(50); // Pulsing or indeterminate feel if Ratatui allows, for now 50%.
-
-            frame.render_widget(gauge, right_layout[2]);
+        AppMode::BandwidthTesting {
+            phase,
+            current_mbps,
+            progress,
+        } => {
+            render_bandwidth_panel(frame, main_layout[1], phase, current_mbps, progress, None);
         }
+        AppMode::BandwidthFinished { down_mbps, up_mbps } => {
+            render_bandwidth_panel(
+                frame,
+                main_layout[1],
+                "Finished",
+                0.0,
+                100.0,
+                Some((down_mbps, up_mbps)),
+            );
+        }
+    }
+}
+
+fn render_bandwidth_panel(
+    frame: &mut Frame,
+    area: Rect,
+    phase: &'static str,
+    current: f64,
+    progress: f64,
+    finished_results: Option<(f64, f64)>,
+) {
+    let right_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .split(area);
+
+    let top_split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(right_layout[0]);
+
+    // Download block
+    let down_val = if let Some(res) = finished_results {
+        res.0
+    } else if phase == "Download" {
+        current
+    } else {
+        0.0
+    };
+    let down_str = format!("{:.1}", down_val);
+    let down_color = if phase == "Download" {
+        Color::LightCyan
+    } else {
+        Color::DarkGray
+    };
+
+    let down_block = Block::default()
+        .title(" Download (Mbps) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(down_color));
+    let down_inner = down_block.inner(top_split[0]);
+    frame.render_widget(down_block, top_split[0]);
+
+    let down_text = BigText::builder()
+        .pixel_size(PixelSize::Full)
+        .style(Style::default().fg(down_color))
+        .lines(vec![down_str.into()])
+        .build();
+    frame.render_widget(down_text, down_inner);
+
+    // Upload block
+    let up_val = if let Some(res) = finished_results {
+        res.1
+    } else if phase == "Upload" {
+        current
+    } else {
+        0.0
+    };
+    let up_str = format!("{:.1}", up_val);
+    let up_color = if phase == "Upload" {
+        Color::LightMagenta
+    } else {
+        Color::DarkGray
+    };
+
+    let up_block = Block::default()
+        .title(" Upload (Mbps) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(up_color));
+    let up_inner = up_block.inner(top_split[1]);
+    frame.render_widget(up_block, top_split[1]);
+
+    let up_text = BigText::builder()
+        .pixel_size(PixelSize::Full)
+        .style(Style::default().fg(up_color))
+        .lines(vec![up_str.into()])
+        .build();
+    frame.render_widget(up_text, up_inner);
+
+    // Bottom block
+    let bottom_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3), // Gauge
+            Constraint::Length(1),
+        ])
+        .flex(ratatui::layout::Flex::Center)
+        .split(right_layout[1]);
+
+    if finished_results.is_some() {
+        let msg = Paragraph::new(Text::from(vec![Line::from(vec![Span::styled(
+            "Test Complete. Press [Enter] to return to Ping View.",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )])]))
+        .alignment(Alignment::Center);
+        frame.render_widget(msg, bottom_layout[1]);
+    } else {
+        let gauge = Gauge::default()
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} Progress ", phase)),
+            )
+            .gauge_style(Style::default().fg(Color::LightCyan).bg(Color::DarkGray))
+            .percent(progress.min(100.0).max(0.0) as u16);
+        frame.render_widget(gauge, bottom_layout[1]);
     }
 }

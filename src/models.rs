@@ -34,6 +34,9 @@ pub struct PingMetrics {
 pub struct BandwidthMetrics {
     pub download_mbps: f64,
     pub is_finished: bool,
+    pub progress_percentage: f64,
+    pub is_upload: bool,
+    pub upload_mbps: Option<f64>,
 }
 
 #[derive(Debug)]

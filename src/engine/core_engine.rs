@@ -74,11 +74,12 @@ impl CoreEngine {
 
             loop {
                 tokio::select! {
-                    Some(cmd) = cmd_rx.recv() => {
-                        match cmd {
-                            EngineCommand::Pause => is_paused = true,
-                            EngineCommand::Resume => is_paused = false,
-                            EngineCommand::Stop => break,
+                    cmd_opt = cmd_rx.recv() => {
+                        match cmd_opt {
+                            Some(EngineCommand::Pause) => is_paused = true,
+                            Some(EngineCommand::Resume) => is_paused = false,
+                            Some(EngineCommand::Stop) => break,
+                            None => break, // Channel closed (e.g., UI exited), stop the engine task.
                         }
                     }
                     _ = interval_timer.tick(), if !is_paused => {

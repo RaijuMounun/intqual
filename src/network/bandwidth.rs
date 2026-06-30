@@ -55,10 +55,15 @@ impl BandwidthEngine {
                 let bytes = bytes_clone.load(Ordering::Relaxed);
                 let elapsed = start_time.elapsed().as_secs_f64();
                 if elapsed > 0.0 {
+                    let mut progress = (bytes as f64 / 25_000_000.0) * 100.0;
+                    if progress > 100.0 { progress = 100.0; }
                     let speed_mbps = ((bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
                     let event = TelemetryEvent::Bandwidth(BandwidthMetrics {
                         download_mbps: speed_mbps,
                         is_finished: false,
+                        progress_percentage: progress,
+                        is_upload: false,
+                        upload_mbps: None,
                     });
                     if tx_reporter.send(event).await.is_err() {
                         break;
@@ -88,11 +93,35 @@ impl BandwidthEngine {
         }
 
         let final_bytes = total_bytes.load(Ordering::Relaxed);
-        let speed_mbps = ((final_bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
+        let final_down_mbps = ((final_bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
+        let mock_up_mbps = final_down_mbps / 2.0;
+
+        // Mock Upload Phase Loop (Anti-Jank UX)
+        let mut upload_progress = 0.0;
+        let mut upload_interval = tokio::time::interval(std::time::Duration::from_millis(250));
+        while upload_progress < 100.0 {
+            upload_interval.tick().await;
+            upload_progress += 12.5; // 8 ticks = 2 seconds
+            if upload_progress > 100.0 { upload_progress = 100.0; }
+
+            let event = TelemetryEvent::Bandwidth(BandwidthMetrics {
+                download_mbps: final_down_mbps,
+                is_finished: false,
+                progress_percentage: upload_progress,
+                is_upload: true,
+                upload_mbps: Some(mock_up_mbps),
+            });
+            if tx.send(event).await.is_err() {
+                break;
+            }
+        }
 
         let final_event = TelemetryEvent::Bandwidth(BandwidthMetrics {
-            download_mbps: speed_mbps,
+            download_mbps: final_down_mbps,
             is_finished: true,
+            progress_percentage: 100.0,
+            is_upload: true,
+            upload_mbps: Some(mock_up_mbps),
         });
         let _ = tx.send(final_event).await;
 
