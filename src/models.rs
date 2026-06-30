@@ -43,4 +43,5 @@ pub struct BandwidthMetrics {
 pub enum TelemetryEvent {
     Ping(PingMetrics),
     Bandwidth(BandwidthMetrics),
+    BandwidthError(String),
 }

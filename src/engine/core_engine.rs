@@ -12,6 +12,7 @@ pub enum EngineCommand {
     Pause,
     Resume,
     Stop,
+    StartBandwidthTest,
 }
 
 /// Core network measurement engine executing a concurrent dual-probing strategy.
@@ -79,6 +80,21 @@ impl CoreEngine {
                             Some(EngineCommand::Pause) => is_paused = true,
                             Some(EngineCommand::Resume) => is_paused = false,
                             Some(EngineCommand::Stop) => break,
+                            Some(EngineCommand::StartBandwidthTest) => {
+                                is_paused = true;
+                                let tx_for_bw = tx.clone();
+                                tokio::spawn(async move {
+                                    let result = crate::network::bandwidth::BandwidthEngine::test_download(
+                                        "speed.cloudflare.com", 
+                                        "/__down?bytes=250000000", 
+                                        tx_for_bw.clone()
+                                    ).await;
+
+                                    if let Err(e) = result {
+                                        let _ = tx_for_bw.send(crate::models::TelemetryEvent::BandwidthError(e)).await;
+                                    }
+                                });
+                            }
                             None => break, // Channel closed (e.g., UI exited), stop the engine task.
                         }
                     }

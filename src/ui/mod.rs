@@ -43,7 +43,7 @@ pub struct AppState {
     pub latest_sequence: u64,
     pub mode: AppMode,
     pub last_speed_test: Option<(f64, f64)>, // (Down, Up)
-    pub active_test_task: Option<tokio::task::JoinHandle<()>>,
+    pub last_error: Option<String>,
 }
 
 /// Manages the volatile view state for the terminal UI.
@@ -61,7 +61,7 @@ impl AppState {
             latest_sequence: 0,
             mode: AppMode::Ping,
             last_speed_test: None,
-            active_test_task: None,
+            last_error: None,
         }
     }
 
@@ -130,7 +130,7 @@ impl AppState {
 pub fn run_app(
     mut rx: mpsc::Receiver<TelemetryEvent>,
     cmd_tx: mpsc::Sender<EngineCommand>,
-    tx: mpsc::Sender<TelemetryEvent>,
+    _tx: mpsc::Sender<TelemetryEvent>,
 ) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -156,9 +156,7 @@ pub fn run_app(
                     state_changed = true;
                 }
                 TelemetryEvent::Bandwidth(metric) => {
-                    if app.active_test_task.is_none() {
-                        continue;
-                    }
+                    app.last_error = None;
 
                     if metric.is_finished {
                         app.mode = AppMode::BandwidthFinished {
@@ -167,7 +165,6 @@ pub fn run_app(
                         };
                         app.last_speed_test =
                             Some((metric.download_mbps, metric.upload_mbps.unwrap_or(0.0)));
-                        app.active_test_task = None;
                     } else {
                         let phase = if metric.is_upload {
                             "Upload"
@@ -187,6 +184,12 @@ pub fn run_app(
                     }
                     state_changed = true;
                 }
+                TelemetryEvent::BandwidthError(err_msg) => {
+                    app.mode = AppMode::Ping;
+                    app.last_error = Some(err_msg);
+                    let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume);
+                    state_changed = true;
+                }
             }
         }
 
@@ -202,26 +205,11 @@ pub fn run_app(
                         break;
                     } else if key.code == KeyCode::Char('s') {
                         if !matches!(app.mode, AppMode::BandwidthTesting { .. }) {
-                            let _ =
-                                cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Pause);
-
-                            let tx_clone = tx.clone();
-
-                            let handle = tokio::runtime::Handle::current().spawn(async move {
-                                let _ = crate::network::bandwidth::BandwidthEngine::test_download(
-                                    "speed.cloudflare.com",
-                                    "/__down?bytes=50000000",
-                                    tx_clone,
-                                )
-                                .await;
-                            });
-                            app.active_test_task = Some(handle);
+                            app.last_error = None;
+                            let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::StartBandwidthTest);
                         }
                     } else if key.code == KeyCode::Esc {
                         if matches!(app.mode, AppMode::BandwidthTesting { .. }) {
-                            if let Some(handle) = app.active_test_task.take() {
-                                handle.abort();
-                            }
                             app.mode = AppMode::Ping;
                             let _ =
                                 cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume);
@@ -469,6 +457,18 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
         stats_lines.push(Line::from(vec![Span::styled(
             format!(" Up:   {:.1} Mbps", up),
             Style::default().fg(Color::LightMagenta),
+        )]));
+    }
+
+    if let Some(ref err) = app.last_error {
+        stats_lines.push(Line::from(""));
+        stats_lines.push(Line::from(vec![Span::styled(
+            " Bandwidth Error:",
+            Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+        )]));
+        stats_lines.push(Line::from(vec![Span::styled(
+            format!(" {}", err),
+            Style::default().fg(Color::LightRed),
         )]));
     }
 
