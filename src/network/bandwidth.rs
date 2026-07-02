@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 pub struct BandwidthEngine;
 
 impl BandwidthEngine {
-    pub async fn test_download(target_host: &str, target_path: &str, tx: mpsc::Sender<TelemetryEvent>) -> Result<(), String> {
+    pub async fn test_download(target_host: &str, target_path: &str, tx: mpsc::Sender<TelemetryEvent>, cancel_token: tokio_util::sync::CancellationToken) -> Result<(), String> {
         let mut root_store = RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let config = ClientConfig::builder()
@@ -51,24 +51,31 @@ impl BandwidthEngine {
         // Start time measured strictly after connection & handshake & request sending
         let start_time = Instant::now();
 
+        let reporter_token = cancel_token.clone();
         let reporter = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
             loop {
-                interval.tick().await;
-                let bytes = bytes_clone.load(Ordering::Relaxed);
-                let elapsed = start_time.elapsed().as_secs_f64();
-                if elapsed > 0.0 {
-                    let mut progress = (elapsed / 10.0) * 100.0;
-                    if progress > 100.0 { progress = 100.0; }
-                    let speed_mbps = ((bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
-                    let event = TelemetryEvent::Bandwidth(BandwidthMetrics {
-                        download_mbps: speed_mbps,
-                        is_finished: false,
-                        progress_percentage: progress,
-                        is_upload: false,
-                        upload_mbps: None,
-                    });
-                    if tx_reporter.send(event).await.is_err() {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let bytes = bytes_clone.load(Ordering::Relaxed);
+                        let elapsed = start_time.elapsed().as_secs_f64();
+                        if elapsed > 0.0 {
+                            let mut progress = (elapsed / 10.0) * 100.0;
+                            if progress > 100.0 { progress = 100.0; }
+                            let speed_mbps = ((bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
+                            let event = TelemetryEvent::Bandwidth(BandwidthMetrics {
+                                download_mbps: speed_mbps,
+                                is_finished: false,
+                                progress_percentage: progress,
+                                is_upload: false,
+                                upload_mbps: None,
+                            });
+                            if tx_reporter.send(event).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    _ = reporter_token.cancelled() => {
                         break;
                     }
                 }
@@ -79,15 +86,23 @@ impl BandwidthEngine {
             if start_time.elapsed() >= duration_limit {
                 break;
             }
-            match tls_stream.read(&mut buffer).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    total_bytes.fetch_add(n, Ordering::Relaxed);
-                },
-                Err(e) => {
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
                     reporter.abort();
-                    return Err(format!("Error reading from stream: {}", e));
-                },
+                    return Err("Cancelled by user".to_string());
+                }
+                res = tls_stream.read(&mut buffer) => {
+                    match res {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            total_bytes.fetch_add(n, Ordering::Relaxed);
+                        },
+                        Err(e) => {
+                            reporter.abort();
+                            return Err(format!("Error reading from stream: {}", e));
+                        },
+                    }
+                }
             }
         }
 
@@ -128,25 +143,32 @@ impl BandwidthEngine {
         // Start time strictly after request sent
         let up_start_time = Instant::now();
 
+        let reporter_up_token = cancel_token.clone();
         let reporter_up = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
             loop {
-                interval.tick().await;
-                let elapsed = up_start_time.elapsed().as_secs_f64();
-                let bytes = bytes_clone_up.load(Ordering::Relaxed);
-                if elapsed > 0.0 {
-                    let mut progress = (elapsed / 10.0) * 100.0;
-                    if progress > 100.0 { progress = 100.0; }
-                    let speed_mbps = ((bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
-                    
-                    let event = TelemetryEvent::Bandwidth(BandwidthMetrics {
-                        download_mbps: final_down_mbps,
-                        is_finished: false,
-                        progress_percentage: progress,
-                        is_upload: true,
-                        upload_mbps: Some(speed_mbps),
-                    });
-                    if tx_reporter_up.send(event).await.is_err() {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let elapsed = up_start_time.elapsed().as_secs_f64();
+                        let bytes = bytes_clone_up.load(Ordering::Relaxed);
+                        if elapsed > 0.0 {
+                            let mut progress = (elapsed / 10.0) * 100.0;
+                            if progress > 100.0 { progress = 100.0; }
+                            let speed_mbps = ((bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
+                            
+                            let event = TelemetryEvent::Bandwidth(BandwidthMetrics {
+                                download_mbps: final_down_mbps,
+                                is_finished: false,
+                                progress_percentage: progress,
+                                is_upload: true,
+                                upload_mbps: Some(speed_mbps),
+                            });
+                            if tx_reporter_up.send(event).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    _ = reporter_up_token.cancelled() => {
                         break;
                     }
                 }
@@ -154,12 +176,20 @@ impl BandwidthEngine {
         });
 
         while up_start_time.elapsed() < duration_limit {
-            match tls_stream_up.write_all(&upload_chunk).await {
-                Ok(_) => {
-                    total_bytes.fetch_add(upload_chunk.len(), Ordering::Relaxed);
-                },
-                Err(_) => {
-                    break;
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    reporter_up.abort();
+                    return Err("Cancelled by user".to_string());
+                }
+                res = tls_stream_up.write_all(&upload_chunk) => {
+                    match res {
+                        Ok(_) => {
+                            total_bytes.fetch_add(upload_chunk.len(), Ordering::Relaxed);
+                        },
+                        Err(_) => {
+                            break;
+                        }
+                    }
                 }
             }
         }

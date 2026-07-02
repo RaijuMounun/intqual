@@ -44,6 +44,10 @@ pub struct AppState {
     pub mode: AppMode,
     pub last_speed_test: Option<(f64, f64)>, // (Down, Up)
     pub last_error: Option<String>,
+    pub icmp_data: Vec<(f64, f64)>,
+    pub tcp_data: Vec<(f64, f64)>,
+    pub jitter_history: Vec<u64>,
+    pub max_ping: f64,
 }
 
 /// Manages the volatile view state for the terminal UI.
@@ -62,6 +66,10 @@ impl AppState {
             mode: AppMode::Ping,
             last_speed_test: None,
             last_error: None,
+            icmp_data: Vec::with_capacity(HISTORY_SIZE),
+            tcp_data: Vec::with_capacity(HISTORY_SIZE),
+            jitter_history: Vec::with_capacity(HISTORY_SIZE),
+            max_ping: 50.0,
         }
     }
 
@@ -123,6 +131,50 @@ impl AppState {
         };
 
         (loss_pct, avg_jitter)
+    }
+
+    pub fn prepare_render_data(&mut self) {
+        self.icmp_data.clear();
+        self.tcp_data.clear();
+        self.jitter_history.clear();
+        self.max_ping = 50.0;
+
+        let start_seq = self.latest_sequence.saturating_sub(HISTORY_SIZE as u64);
+        let mut last_icmp_ping: Option<f64> = None;
+
+        for seq in start_seq..=self.latest_sequence {
+            let idx = (seq % HISTORY_SIZE as u64) as usize;
+            if let Some(ref metric) = self.history[idx] {
+                if metric.sequence_number == seq {
+                    if let Ok(ping) = metric.icmp_ping {
+                        self.icmp_data.push((seq as f64, ping));
+                        if ping > self.max_ping {
+                            self.max_ping = ping;
+                        }
+
+                        if let Some(last) = last_icmp_ping {
+                            let j = (ping - last).abs();
+                            self.jitter_history.push(j.round() as u64);
+                        } else {
+                            self.jitter_history.push(0);
+                        }
+                        last_icmp_ping = Some(ping);
+                    } else {
+                        self.icmp_data.push((seq as f64, 0.0));
+                        self.jitter_history.push(0);
+                    }
+
+                    if let Ok(ping) = metric.tcp_ping {
+                        self.tcp_data.push((seq as f64, ping));
+                        if ping > self.max_ping {
+                            self.max_ping = ping;
+                        }
+                    }
+                }
+            } else {
+                self.jitter_history.push(0);
+            }
+        }
     }
 }
 
@@ -194,6 +246,7 @@ pub fn run_app(
         }
 
         if state_changed {
+            app.prepare_render_data();
             terminal.draw(|frame| draw_ui(frame, &app))?;
         }
 
@@ -272,48 +325,8 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
 
     frame.render_widget(top_bar, screen_layout[0]);
 
-    // 2. DATA EXTRACTION
-    let mut icmp_data: Vec<(f64, f64)> = Vec::new();
-    let mut tcp_data: Vec<(f64, f64)> = Vec::new();
-    let mut jitter_history: Vec<u64> = Vec::new();
-    let mut max_ping: f64 = 50.0;
-
     let start_seq = app.latest_sequence.saturating_sub(HISTORY_SIZE as u64);
-    let mut last_icmp_ping: Option<f64> = None;
 
-    for seq in start_seq..=app.latest_sequence {
-        let idx = (seq % HISTORY_SIZE as u64) as usize;
-        if let Some(ref metric) = app.history[idx] {
-            if metric.sequence_number == seq {
-                if let Ok(ping) = metric.icmp_ping {
-                    icmp_data.push((seq as f64, ping));
-                    if ping > max_ping {
-                        max_ping = ping;
-                    }
-
-                    if let Some(last) = last_icmp_ping {
-                        let j = (ping - last).abs();
-                        jitter_history.push(j.round() as u64);
-                    } else {
-                        jitter_history.push(0);
-                    }
-                    last_icmp_ping = Some(ping);
-                } else {
-                    icmp_data.push((seq as f64, 0.0));
-                    jitter_history.push(0);
-                }
-
-                if let Ok(ping) = metric.tcp_ping {
-                    tcp_data.push((seq as f64, ping));
-                    if ping > max_ping {
-                        max_ping = ping;
-                    }
-                }
-            }
-        } else {
-            jitter_history.push(0);
-        }
-    }
 
     // 3. LEFT COLUMN (Actionable Metrics & Alarms)
     let (loss_pct, jitter) = app.calculate_stats();
@@ -495,17 +508,17 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
                     .marker(symbols::Marker::Braille)
                     .graph_type(GraphType::Line)
                     .style(Style::default().fg(Color::DarkGray))
-                    .data(&tcp_data),
+                    .data(&app.tcp_data),
                 Dataset::default()
                     .name("ICMP (Ping)")
                     .marker(symbols::Marker::Braille)
                     .graph_type(GraphType::Line)
                     .style(Style::default().fg(Color::LightCyan))
-                    .data(&icmp_data),
+                    .data(&app.icmp_data),
             ];
 
             let x_bounds = [start_seq as f64, app.latest_sequence as f64];
-            let y_bounds = [0.0, max_ping * 1.1];
+            let y_bounds = [0.0, app.max_ping * 1.1];
 
             let chart = Chart::new(datasets)
                 .block(
@@ -526,8 +539,8 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
                         .bounds(y_bounds)
                         .labels(vec![
                             Span::raw("0"),
-                            Span::raw(format!("{:.0}", max_ping / 2.0)),
-                            Span::raw(format!("{:.0}", max_ping)),
+                            Span::raw(format!("{:.0}", app.max_ping / 2.0)),
+                            Span::raw(format!("{:.0}", app.max_ping)),
                         ]),
                 )
                 .legend_position(Some(LegendPosition::TopLeft));
@@ -547,7 +560,7 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::DarkGray)),
                 )
-                .data(&jitter_history)
+                .data(&app.jitter_history)
                 .style(Style::default().fg(jitter_color));
 
             frame.render_widget(jitter_sparkline, right_layout[1]);

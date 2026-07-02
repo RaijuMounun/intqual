@@ -72,22 +72,36 @@ impl CoreEngine {
             let mut sequence_counter: u64 = 0;
             let mut interval_timer = tokio::time::interval(self.interval);
             let mut is_paused = false;
+            let mut bw_cancel_token: Option<tokio_util::sync::CancellationToken> = None;
 
             loop {
                 tokio::select! {
                     cmd_opt = cmd_rx.recv() => {
                         match cmd_opt {
                             Some(EngineCommand::Pause) => is_paused = true,
-                            Some(EngineCommand::Resume) => is_paused = false,
-                            Some(EngineCommand::Stop) => break,
+                            Some(EngineCommand::Resume) => {
+                                is_paused = false;
+                                if let Some(token) = bw_cancel_token.take() {
+                                    token.cancel();
+                                }
+                            },
+                            Some(EngineCommand::Stop) => {
+                                if let Some(token) = bw_cancel_token.take() {
+                                    token.cancel();
+                                }
+                                break;
+                            },
                             Some(EngineCommand::StartBandwidthTest) => {
                                 is_paused = true;
                                 let tx_for_bw = tx.clone();
+                                let token = tokio_util::sync::CancellationToken::new();
+                                bw_cancel_token = Some(token.clone());
                                 tokio::spawn(async move {
                                     let result = crate::network::bandwidth::BandwidthEngine::test_download(
                                         "speed.cloudflare.com", 
                                         "/__down?bytes=250000000", 
-                                        tx_for_bw.clone()
+                                        tx_for_bw.clone(),
+                                        token
                                     ).await;
 
                                     if let Err(e) = result {
