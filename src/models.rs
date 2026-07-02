@@ -1,3 +1,19 @@
+#[derive(thiserror::Error, Debug)]
+pub enum ProbeError {
+    #[error("ICMP Timeout")]
+    IcmpTimeout,
+    #[error("TCP Timeout")]
+    TcpTimeout,
+    #[error("Socket Error: {0}")]
+    Socket(#[from] std::io::Error),
+    #[error("Permission Denied / Unsupported")]
+    PermissionDenied,
+    #[error("DNS Resolution Failed: {0}")]
+    DnsResolution(String),
+    #[error("Bandwidth Test Failed: {0}")]
+    BandwidthTestFailed(String),
+}
+
 /// The canonical data contract between the Network Engine (Producer) and the UI (Consumer).
 /// By strictly decoupling the data model from both business logic and rendering, 
 /// we ensure thread-safety and allow future extensions (like writing metrics to a database or REST API)
@@ -17,11 +33,11 @@ pub struct PingMetrics {
     /// `Result`: In network diagnostics, a failure (Timeout/Permission Denied) is first-class data. 
     /// Using `Result` forces the UI to explicitly handle and display specific OS errors,
     /// preventing "error swallowing" and ensuring high observability.
-    pub icmp_ping: Result<f64, String>,
+    pub icmp_ping: Result<f64, ProbeError>,
     
     /// The TCP ping latency (handshake duration) in milliseconds.
     /// Follows the same strict error-handling paradigm as `icmp_ping` to detect Application Layer drops.
-    pub tcp_ping: Result<f64, String>,
+    pub tcp_ping: Result<f64, ProbeError>,
     
     /// UNIX timestamp of when this measurement was dispatched.
     /// While sequence numbers handle UI relative ordering, absolute timestamps are essential 
@@ -30,18 +46,16 @@ pub struct PingMetrics {
     pub timestamp: u64,
 }
 
-#[derive(Debug)]
-pub struct BandwidthMetrics {
-    pub download_mbps: f64,
-    pub is_finished: bool,
-    pub progress_percentage: f64,
-    pub is_upload: bool,
-    pub upload_mbps: Option<f64>,
+#[derive(Debug, Clone)]
+pub enum BandwidthProgress {
+    Downloading { current_mbps: f64, progress_pct: f64 },
+    Uploading { download_result_mbps: f64, current_mbps: f64, progress_pct: f64 },
+    Finished { download_mbps: f64, upload_mbps: f64 },
 }
 
 #[derive(Debug)]
 pub enum TelemetryEvent {
     Ping(PingMetrics),
-    Bandwidth(BandwidthMetrics),
-    BandwidthError(String),
+    Bandwidth(BandwidthProgress),
+    BandwidthError(ProbeError),
 }

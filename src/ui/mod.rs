@@ -1,5 +1,5 @@
 use crate::engine::core_engine::EngineCommand;
-use crate::models::{PingMetrics, TelemetryEvent};
+use crate::models::{PingMetrics, TelemetryEvent, BandwidthProgress, ProbeError};
 use crossterm::{
     ExecutableCommand,
     event::{self, Event, KeyCode},
@@ -24,18 +24,10 @@ use tui_big_text::{BigText, PixelSize};
 /// for standard terminal widths, ensuring the sliding window remains legible.
 const HISTORY_SIZE: usize = 100;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum AppMode {
     Ping,
-    BandwidthTesting {
-        phase: &'static str,
-        current_mbps: f64,
-        progress: f64,
-    },
-    BandwidthFinished {
-        down_mbps: f64,
-        up_mbps: f64,
-    },
+    BandwidthTesting(BandwidthProgress),
 }
 
 pub struct AppState {
@@ -207,39 +199,20 @@ pub fn run_app(
                     app.push_metric(metric);
                     state_changed = true;
                 }
-                TelemetryEvent::Bandwidth(metric) => {
+                TelemetryEvent::Bandwidth(progress) => {
                     app.last_error = None;
-
-                    if metric.is_finished {
-                        app.mode = AppMode::BandwidthFinished {
-                            down_mbps: metric.download_mbps,
-                            up_mbps: metric.upload_mbps.unwrap_or(0.0),
-                        };
-                        app.last_speed_test =
-                            Some((metric.download_mbps, metric.upload_mbps.unwrap_or(0.0)));
-                    } else {
-                        let phase = if metric.is_upload {
-                            "Upload"
-                        } else {
-                            "Download"
-                        };
-                        let current = if metric.is_upload {
-                            metric.upload_mbps.unwrap_or(0.0)
-                        } else {
-                            metric.download_mbps
-                        };
-                        app.mode = AppMode::BandwidthTesting {
-                            phase,
-                            current_mbps: current,
-                            progress: metric.progress_percentage,
-                        };
+                    if let BandwidthProgress::Finished { download_mbps, upload_mbps } = &progress {
+                        app.last_speed_test = Some((*download_mbps, *upload_mbps));
                     }
+                    app.mode = AppMode::BandwidthTesting(progress);
                     state_changed = true;
                 }
-                TelemetryEvent::BandwidthError(err_msg) => {
+                TelemetryEvent::BandwidthError(err) => {
                     app.mode = AppMode::Ping;
-                    app.last_error = Some(err_msg);
-                    let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume);
+                    app.last_error = Some(err.to_string());
+                    if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
+                        tracing::error!("Failed to send EngineCommand: {}", e);
+                    }
                     state_changed = true;
                 }
             }
@@ -257,21 +230,25 @@ pub fn run_app(
                     if key.code == KeyCode::Char('q') {
                         break;
                     } else if key.code == KeyCode::Char('s') {
-                        if !matches!(app.mode, AppMode::BandwidthTesting { .. }) {
+                        if !matches!(app.mode, AppMode::BandwidthTesting(_)) {
                             app.last_error = None;
-                            let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::StartBandwidthTest);
+                            if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::StartBandwidthTest) {
+                                tracing::error!("Failed to send EngineCommand: {}", e);
+                            }
                         }
                     } else if key.code == KeyCode::Esc {
-                        if matches!(app.mode, AppMode::BandwidthTesting { .. }) {
+                        if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..})) {
                             app.mode = AppMode::Ping;
-                            let _ =
-                                cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume);
+                            if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
+                                tracing::error!("Failed to send EngineCommand: {}", e);
+                            }
                         }
                     } else if key.code == KeyCode::Enter {
-                        if matches!(app.mode, AppMode::BandwidthFinished { .. }) {
+                        if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..})) {
                             app.mode = AppMode::Ping;
-                            let _ =
-                                cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume);
+                            if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
+                                tracing::error!("Failed to send EngineCommand: {}", e);
+                            }
                         }
                     }
                 }
@@ -303,8 +280,8 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
         .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
         .split(screen_layout[1]);
 
-    let is_testing = matches!(app.mode, AppMode::BandwidthTesting { .. });
-    let is_finished = matches!(app.mode, AppMode::BandwidthFinished { .. });
+    let is_testing = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..}));
+    let is_finished = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..}));
     let is_testing_or_finished = is_testing || is_finished;
 
     let nav_text = if is_testing {
@@ -355,16 +332,22 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
     if app.latest_sequence == 0 {
         stats_lines.push(Line::from("  Waiting for data..."));
     } else if let Some(ref metric) = app.history[latest_idx] {
-        let icmp_str = match &metric.icmp_ping {
-            Ok(ms) => format!("{:.1} ms", ms),
-            Err(e) => e.clone(),
+        let mut perm_denied = false;
+        let (icmp_str, icmp_color_override) = match &metric.icmp_ping {
+            Ok(ms) => (format!("{:.1} ms", ms), None),
+            Err(ProbeError::IcmpTimeout) => ("Timeout".to_string(), Some(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+            Err(ProbeError::PermissionDenied) => {
+                perm_denied = true;
+                ("Perm Denied".to_string(), Some(Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)))
+            },
+            Err(e) => (e.to_string(), Some(Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD))),
         };
         let tcp_str = match &metric.tcp_ping {
             Ok(ms) => format!("{:.1} ms", ms),
-            Err(e) => e.clone(),
+            Err(e) => e.to_string(),
         };
 
-        let (icmp_color, tcp_color, jitter_style, loss_style) = if is_testing_or_finished {
+        let (mut icmp_color, tcp_color, jitter_style, loss_style) = if is_testing_or_finished {
             let gray = Style::default().fg(Color::DarkGray);
             (gray, gray, gray, gray)
         } else {
@@ -400,6 +383,20 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
                 l_style,
             )
         };
+
+        if let Some(c) = icmp_color_override {
+            if !is_testing_or_finished {
+                icmp_color = c;
+            }
+        }
+
+        if perm_denied {
+            stats_lines.push(Line::from(vec![Span::styled(
+                " NO RAW SOCKET PERMISSIONS ",
+                Style::default().bg(Color::Red).fg(Color::White).add_modifier(Modifier::BOLD),
+            )]));
+            stats_lines.push(Line::from(""));
+        }
 
         stats_lines.push(Line::from(vec![Span::styled(
             " Target:",
@@ -565,23 +562,25 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
 
             frame.render_widget(jitter_sparkline, right_layout[1]);
         }
-        AppMode::BandwidthTesting {
-            phase,
-            current_mbps,
-            progress,
-        } => {
-            render_bandwidth_panel(frame, main_layout[1], phase, current_mbps, progress, None);
-        }
-        AppMode::BandwidthFinished { down_mbps, up_mbps } => {
-            render_bandwidth_panel(
-                frame,
-                main_layout[1],
-                "Finished",
-                0.0,
-                100.0,
-                Some((down_mbps, up_mbps)),
-            );
-        }
+        AppMode::BandwidthTesting(ref progress) => match progress {
+            BandwidthProgress::Downloading { current_mbps, progress_pct } => {
+                render_bandwidth_panel(frame, main_layout[1], "Download", *current_mbps, 0.0, *progress_pct, false);
+            }
+            BandwidthProgress::Uploading { download_result_mbps, current_mbps, progress_pct } => {
+                render_bandwidth_panel(frame, main_layout[1], "Upload", *download_result_mbps, *current_mbps, *progress_pct, false);
+            }
+            BandwidthProgress::Finished { download_mbps, upload_mbps } => {
+                render_bandwidth_panel(
+                    frame,
+                    main_layout[1],
+                    "Finished",
+                    *download_mbps,
+                    *upload_mbps,
+                    100.0,
+                    true,
+                );
+            }
+        },
     }
 }
 
@@ -589,9 +588,10 @@ fn render_bandwidth_panel(
     frame: &mut Frame,
     area: Rect,
     phase: &'static str,
-    current: f64,
+    down_val: f64,
+    up_val: f64,
     progress: f64,
-    finished_results: Option<(f64, f64)>,
+    is_finished: bool,
 ) {
     let right_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -604,13 +604,6 @@ fn render_bandwidth_panel(
         .split(right_layout[0]);
 
     // Download block
-    let down_val = if let Some(res) = finished_results {
-        res.0
-    } else if phase == "Download" {
-        current
-    } else {
-        0.0
-    };
     let down_str = format!("{:.1}", down_val);
     let down_color = if phase == "Download" {
         Color::LightCyan
@@ -633,13 +626,6 @@ fn render_bandwidth_panel(
     frame.render_widget(down_text, down_inner);
 
     // Upload block
-    let up_val = if let Some(res) = finished_results {
-        res.1
-    } else if phase == "Upload" {
-        current
-    } else {
-        0.0
-    };
     let up_str = format!("{:.1}", up_val);
     let up_color = if phase == "Upload" {
         Color::LightMagenta
@@ -672,7 +658,7 @@ fn render_bandwidth_panel(
         .flex(ratatui::layout::Flex::Center)
         .split(right_layout[1]);
 
-    if finished_results.is_some() {
+    if is_finished {
         let msg = Paragraph::new(Text::from(vec![Line::from(vec![Span::styled(
             "Test Complete. Press [Enter] to return to Ping View.",
             Style::default()

@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 use tokio::time::Instant;
-use crate::models::{PingMetrics, TelemetryEvent};
+use tokio::sync::mpsc;
+use crate::models::{PingMetrics, TelemetryEvent, ProbeError};
 use crate::network::icmp::{DefaultIcmpProvider, IcmpProvider};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,12 +52,15 @@ impl CoreEngine {
                 if let Some(addr) = addrs.next() {
                     addr
                 } else {
-                    eprintln!("Fatal Error: DNS returned no addresses for {}", self.target_ip);
+                    tracing::error!("Fatal Error: DNS returned no addresses for {}", self.target_ip);
                     return;
                 }
             },
             Err(e) => {
-                eprintln!("Fatal Error: DNS Resolution Failed: {}", e);
+                tracing::error!("Fatal Error: DNS Resolution Failed: {}", e);
+                if let Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::DnsResolution(e.to_string()))) {
+                    tracing::error!("UI channel closed unexpectedly during DNS failure");
+                }
                 return;
             }
         };
@@ -99,13 +102,15 @@ impl CoreEngine {
                                 tokio::spawn(async move {
                                     let result = crate::network::bandwidth::BandwidthEngine::test_download(
                                         "speed.cloudflare.com", 
-                                        "/__down?bytes=250000000", 
+                                        "/__down?bytes=25000000", 
                                         tx_for_bw.clone(),
                                         token
                                     ).await;
 
                                     if let Err(e) = result {
-                                        let _ = tx_for_bw.send(crate::models::TelemetryEvent::BandwidthError(e)).await;
+                                        if let Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) = tx_for_bw.try_send(crate::models::TelemetryEvent::BandwidthError(e)) {
+                                            tracing::error!("UI channel closed unexpectedly during bandwidth error");
+                                        }
                                     }
                                 });
                             }
@@ -141,14 +146,16 @@ impl CoreEngine {
                             // prevents TIME_WAIT socket exhaustion during high-frequency polling.
                             tokio::task::spawn_blocking(move || {
                                 let sock_ref = socket2::SockRef::from(&stream);
-                                let _ = sock_ref.set_linger(Some(Duration::from_secs(0)));
+                                if let Err(e) = sock_ref.set_linger(Some(Duration::from_secs(0))) {
+                                    tracing::debug!("Failed to set linger (ignoring): {}", e);
+                                }
                                 drop(stream);
                             });
 
                             Ok(elapsed)
                         },
-                        Ok(Err(e)) => Err(format!("Socket Error: {}", e)),
-                        Err(_) => Err("TCP Timeout".to_string()),
+                        Ok(Err(e)) => Err(ProbeError::Socket(e)),
+                        Err(_) => Err(ProbeError::TcpTimeout),
                     };
 
                     // --- SUB-TASK B: Synchronous OS-level ICMP Probe ---
@@ -158,7 +165,7 @@ impl CoreEngine {
                     let icmp_ping_result = tokio::task::spawn_blocking(move || {
                         let provider = DefaultIcmpProvider::new(icmp_identifier);
                         provider.ping(&icmp_target, icmp_seq, timeout_duration)
-                    }).await.unwrap_or_else(|_| Err("Thread Panicked".to_string()));
+                    }).await.unwrap_or_else(|_| Err(ProbeError::BandwidthTestFailed("Thread Panicked".to_string())));
 
                     let timestamp = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -173,7 +180,18 @@ impl CoreEngine {
                         timestamp,
                     };
 
-                    let _ = tx_clone.send(TelemetryEvent::Ping(metrics)).await;
+                    match tx_clone.try_send(TelemetryEvent::Ping(metrics)) {
+                        Ok(_) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            tracing::warn!("UI is lagging, dropping telemetry event");
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            tracing::error!("UI channel closed unexpectedly");
+                            // Since this is in a spawned task for a single tick, we just return.
+                            // The outer loop will also fail on its next try_send if it sends anything, 
+                            // but wait, the outer loop doesn't send. The outer loop just spawns.
+                        }
+                    }
                 });
                     }
                 }

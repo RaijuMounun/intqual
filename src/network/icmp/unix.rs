@@ -9,6 +9,8 @@ use socket2::{Domain, Protocol, Socket, Type};
 use super::provider::IcmpProvider;
 use super::packet::{IcmpEchoRequest, IcmpEchoReply};
 
+use crate::models::ProbeError;
+
 pub struct UnixDgramIcmp {
     identifier: u16,
 }
@@ -20,22 +22,26 @@ impl UnixDgramIcmp {
 }
 
 impl IcmpProvider for UnixDgramIcmp {
-    fn ping(&self, target: &SocketAddr, seq: u16, timeout: Duration) -> Result<f64, String> {
+    fn ping(&self, target: &SocketAddr, seq: u16, timeout: Duration) -> Result<f64, ProbeError> {
         let icmp_start = Instant::now();
         
         let socket = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4)) {
             Ok(s) => s,
-            Err(_) => return Err("Permission Denied / Unsupported".to_string()),
+            Err(_) => return Err(ProbeError::PermissionDenied),
         };
 
-        let _ = socket.set_read_timeout(Some(timeout));
-        let _ = socket.set_write_timeout(Some(timeout));
+        if let Err(e) = socket.set_read_timeout(Some(timeout)) {
+            tracing::debug!("Failed to set read timeout (ignoring): {}", e);
+        }
+        if let Err(e) = socket.set_write_timeout(Some(timeout)) {
+            tracing::debug!("Failed to set write timeout (ignoring): {}", e);
+        }
 
         let packet = IcmpEchoRequest::new(self.identifier, seq, vec![]);
         let packet_bytes = packet.encode_without_checksum();
 
-        if socket.send_to(&packet_bytes, &(*target).into()).is_err() {
-            return Err("Send Failed".to_string());
+        if let Err(e) = socket.send_to(&packet_bytes, &(*target).into()) {
+            return Err(ProbeError::Socket(e));
         }
 
         let mut buf = [MaybeUninit::uninit(); 128];
@@ -54,10 +60,10 @@ impl IcmpProvider for UnixDgramIcmp {
                     }
 
                     if icmp_start.elapsed() > timeout {
-                        return Err("ICMP Timeout".to_string());
+                        return Err(ProbeError::IcmpTimeout);
                     }
                 },
-                Err(_) => return Err("ICMP Timeout".to_string()),
+                Err(_) => return Err(ProbeError::IcmpTimeout),
             }
         }
     }
