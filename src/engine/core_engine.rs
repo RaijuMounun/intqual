@@ -102,7 +102,7 @@ impl CoreEngine {
                                 tokio::spawn(async move {
                                     let result = crate::network::bandwidth::BandwidthEngine::test_download(
                                         "speed.cloudflare.com", 
-                                        "/__down?bytes=25000000", 
+                                        "/__down?bytes=50000000", 
                                         tx_for_bw.clone(),
                                         token
                                     ).await;

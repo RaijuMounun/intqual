@@ -224,18 +224,23 @@ impl BandwidthEngine {
             }
         });
 
+        let up_deadline = up_start_time + duration_limit;
         while up_start_time.elapsed() < duration_limit {
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     reporter_up.abort();
                     return Err(ProbeError::BandwidthTestFailed("Cancelled by user".to_string()));
                 }
+                _ = tokio::time::sleep_until(up_deadline) => {
+                    break;
+                }
                 res = tls_stream_up.write_all(&upload_chunk) => {
                     match res {
                         Ok(_) => {
                             total_bytes.fetch_add(upload_chunk.len(), Ordering::Relaxed);
                         },
-                        Err(_) => {
+                        Err(e) => {
+                            tracing::warn!("Upload stream error: {}", e);
                             break;
                         }
                     }

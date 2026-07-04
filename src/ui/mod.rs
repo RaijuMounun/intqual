@@ -102,8 +102,11 @@ impl AppState {
                             }
                             last_ping = Some(ping);
                         }
-                        Err(_) => {
+                        Err(ProbeError::IcmpTimeout) => {
                             loss_count += 1;
+                        }
+                        Err(_) => {
+                            // Systemic failures (PermissionDenied, Socket) are not network loss
                         }
                     }
                 }
@@ -208,12 +211,16 @@ pub fn run_app(
                     state_changed = true;
                 }
                 TelemetryEvent::BandwidthError(err) => {
-                    app.mode = AppMode::Ping;
-                    app.last_error = Some(err.to_string());
-                    if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
-                        tracing::error!("Failed to send EngineCommand: {}", e);
+                    if let AppMode::Ping = app.mode {
+                        // Ignore stale errors if already manually aborted
+                    } else {
+                        app.mode = AppMode::Ping;
+                        app.last_error = Some(err.to_string());
+                        if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
+                            tracing::error!("Failed to send EngineCommand: {}", e);
+                        }
+                        state_changed = true;
                     }
-                    state_changed = true;
                 }
             }
         }
@@ -228,6 +235,7 @@ pub fn run_app(
             match event::read()? {
                 Event::Key(key) => {
                     if key.code == KeyCode::Char('q') {
+                        let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Stop);
                         break;
                     } else if key.code == KeyCode::Char('s') {
                         if !matches!(app.mode, AppMode::BandwidthTesting(_)) {
@@ -239,6 +247,7 @@ pub fn run_app(
                     } else if key.code == KeyCode::Esc {
                         if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..})) {
                             app.mode = AppMode::Ping;
+                            app.last_error = None;
                             if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
                                 tracing::error!("Failed to send EngineCommand: {}", e);
                             }
@@ -246,6 +255,7 @@ pub fn run_app(
                     } else if key.code == KeyCode::Enter {
                         if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..})) {
                             app.mode = AppMode::Ping;
+                            app.last_error = None;
                             if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
                                 tracing::error!("Failed to send EngineCommand: {}", e);
                             }
