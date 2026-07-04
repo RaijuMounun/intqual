@@ -6,3 +6,4 @@
 *.tar.gz
 pkg/
 src/intqual-*/
+intqual.log
