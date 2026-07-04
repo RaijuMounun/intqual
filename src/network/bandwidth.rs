@@ -32,133 +32,139 @@ impl BandwidthEngine {
             target_path, target_host
         );
 
-        let mut buffer = [0u8; 8192];
-        let total_bytes = Arc::new(AtomicUsize::new(0));
-        let bytes_clone = total_bytes.clone();
+        const CONCURRENT_CONNECTIONS: usize = 8;
         let duration_limit = std::time::Duration::from_secs(10);
-        let tx_reporter = tx.clone();
-
-        // Start time measured from the beginning of the download test phase.
         let start_time = Instant::now();
 
-        let reporter_token = cancel_token.clone();
-        let reporter = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        let bytes = bytes_clone.load(Ordering::Relaxed);
-                        let elapsed = start_time.elapsed().as_secs_f64();
-                        if elapsed > 0.0 {
-                            let mut progress = (elapsed / 10.0) * 100.0;
-                            if progress > 100.0 { progress = 100.0; }
-                            let speed_mbps = ((bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
-                            let event = TelemetryEvent::Bandwidth(BandwidthProgress::Downloading {
-                                current_mbps: speed_mbps,
-                                progress_pct: progress,
-                            });
-                            match tx_reporter.try_send(event) {
-                                Ok(_) => {}
-                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                    tracing::warn!("UI is lagging, dropping telemetry event");
-                                }
-                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                    tracing::error!("UI channel closed unexpectedly");
-                                    break;
+        let (chunk_tx, mut chunk_rx) = mpsc::channel::<usize>(8192);
+        let worker_token = cancel_token.child_token();
+
+        for _ in 0..CONCURRENT_CONNECTIONS {
+            let tx = chunk_tx.clone();
+            let token = worker_token.clone();
+            let addr = addr.clone();
+            let server_name = server_name.clone();
+            let connector = connector.clone();
+            let request = request.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    if token.is_cancelled() { break; }
+
+                    let stream = match TcpStream::connect(&addr).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::debug!("Worker connection failed: {}, retrying...", e);
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            continue;
+                        }
+                    };
+
+                    let mut tls_stream = match connector.connect(server_name.clone(), stream).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::debug!("Worker TLS handshake failed: {}, retrying...", e);
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) = tls_stream.write_all(request.as_bytes()).await {
+                        tracing::debug!("Worker failed to send request: {}, retrying...", e);
+                        continue;
+                    }
+                    if let Err(e) = tls_stream.flush().await {
+                        tracing::debug!("Worker failed to flush request: {}, retrying...", e);
+                        continue;
+                    }
+
+                    let mut buffer = [0u8; 8192];
+                    loop {
+                        tokio::select! {
+                            _ = token.cancelled() => {
+                                return;
+                            }
+                            res = tls_stream.read(&mut buffer) => {
+                                match res {
+                                    Ok(0) => {
+                                        break; // EOF, reconnect
+                                    }
+                                    Ok(n) => {
+                                        let _ = tx.try_send(n);
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!("Worker stream error: {}, reconnecting...", e);
+                                        break; // reconnect
+                                    }
                                 }
                             }
                         }
                     }
-                    _ = reporter_token.cancelled() => {
-                        break;
-                    }
                 }
-            }
-        });
+            });
+        }
 
-        // Solution B: Time-bounded download loop with automatic reconnection.
-        // The test is strictly time-bounded (10 seconds). If the stream returns EOF or
-        // a socket error before duration_limit, we gracefully reconnect and continue
-        // accumulating bytes. The loop only terminates on time expiry or cancellation.
-        while start_time.elapsed() < duration_limit {
-            if cancel_token.is_cancelled() {
-                reporter.abort();
-                return Err(ProbeError::BandwidthTestFailed("Cancelled by user".to_string()));
-            }
+        drop(chunk_tx); // Drop the original tx so rx can close
 
-            let stream = match TcpStream::connect(&addr).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("Download connection failed: {}, retrying...", e);
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    continue;
+        let mut total_bytes_downloaded: usize = 0;
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+        let deadline = tokio::time::sleep(duration_limit);
+        tokio::pin!(deadline);
+
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    worker_token.cancel();
+                    return Err(ProbeError::BandwidthTestFailed("Cancelled by user".to_string()));
                 }
-            };
-
-            let mut tls_stream = match connector.connect(server_name.clone(), stream).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("TLS handshake failed during download: {}, retrying...", e);
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    continue;
-                }
-            };
-
-            if let Err(e) = tls_stream.write_all(request.as_bytes()).await {
-                tracing::warn!("Failed to send download request: {}, retrying...", e);
-                continue;
-            }
-
-            // Flush the TLS write buffer to ensure the HTTP request is actually transmitted
-            // to the server. Without this, rustls may buffer the request internally,
-            // causing read() to hang indefinitely waiting for a response that never arrives.
-            if let Err(e) = tls_stream.flush().await {
-                tracing::warn!("Failed to flush download request: {}, retrying...", e);
-                continue;
-            }
-
-            // Inner read loop for the current connection
-            let deadline = start_time + duration_limit;
-            loop {
-                if start_time.elapsed() >= duration_limit {
+                _ = &mut deadline => {
+                    worker_token.cancel();
                     break;
                 }
-                tokio::select! {
-                    _ = cancel_token.cancelled() => {
-                        reporter.abort();
-                        return Err(ProbeError::BandwidthTestFailed("Cancelled by user".to_string()));
+                _ = interval.tick() => {
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    if elapsed > 0.0 {
+                        let mut progress = (elapsed / 10.0) * 100.0;
+                        if progress > 100.0 { progress = 100.0; }
+                        let speed_mbps = ((total_bytes_downloaded as f64 * 8.0) / 1_000_000.0) / elapsed;
+                        let event = TelemetryEvent::Bandwidth(BandwidthProgress::Downloading {
+                            current_mbps: speed_mbps,
+                            progress_pct: progress,
+                        });
+                        match tx.try_send(event) {
+                            Ok(_) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                tracing::warn!("UI is lagging, dropping telemetry event");
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                tracing::error!("UI channel closed unexpectedly");
+                                worker_token.cancel();
+                                break;
+                            }
+                        }
                     }
-                    _ = tokio::time::sleep_until(deadline) => {
-                        break; // Time's up; exit even if read is hanging
-                    }
-                    res = tls_stream.read(&mut buffer) => {
-                        match res {
-                            Ok(0) => {
-                                tracing::info!("Download stream EOF before time limit, reconnecting...");
-                                break; // Break inner loop; outer loop will reconnect
-                            }
-                            Ok(n) => {
-                                total_bytes.fetch_add(n, Ordering::Relaxed);
-                            }
-                            Err(e) => {
-                                tracing::warn!("Download stream error: {}, reconnecting...", e);
-                                break; // Break inner loop; outer loop will reconnect
-                            }
+                }
+                msg = chunk_rx.recv() => {
+                    match msg {
+                        Some(bytes) => {
+                            total_bytes_downloaded += bytes;
+                        }
+                        None => {
+                            break;
                         }
                     }
                 }
             }
         }
 
-        reporter.abort();
+        drop(chunk_rx);
 
         let elapsed = start_time.elapsed().as_secs_f64();
         if elapsed == 0.0 {
             return Err(ProbeError::BandwidthTestFailed("Elapsed time is zero".to_string()));
         }
 
-        let final_bytes = total_bytes.load(Ordering::Relaxed);
-        let final_down_mbps = ((final_bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
+        let final_down_mbps = ((total_bytes_downloaded as f64 * 8.0) / 1_000_000.0) / elapsed;
 
         // Upload Phase
         let stream_up = TcpStream::connect(&addr)
@@ -180,7 +186,7 @@ impl BandwidthEngine {
             .map_err(|e| ProbeError::BandwidthTestFailed(format!("Failed to send upload request: {}", e)))?;
 
         let upload_chunk = [0u8; 8192];
-        total_bytes.store(0, Ordering::Relaxed);
+        let total_bytes = Arc::new(AtomicUsize::new(0));
         let tx_reporter_up = tx.clone();
         let bytes_clone_up = total_bytes.clone();
 
