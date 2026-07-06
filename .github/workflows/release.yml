@@ -80,7 +80,7 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: build
-    if: ${{ !cancelled() }}
+    if: ${{ always() }}
     steps:
       - name: Download All Build Artifacts
         uses: actions/download-artifact@v4
