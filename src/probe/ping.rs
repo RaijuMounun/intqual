@@ -41,31 +41,28 @@ impl NetworkProbe for PingProbe {
                     let target_addr = self.resolved_addr;
                     let timeout_duration = self.timeout;
                     let identifier = self.icmp_identifier;
-                    let tx_clone = tx.clone();
-                    let target_ip_clone = Arc::clone(&self.target_ip);
 
-                    tokio::spawn(async move {
-                        let icmp_ping_result = tokio::task::spawn_blocking(move || {
-                            let provider = DefaultIcmpProvider::new(identifier);
-                            provider.ping(&target_addr, icmp_seq, timeout_duration)
-                        }).await.unwrap_or_else(|_| Err(ProbeError::Socket(std::io::Error::new(std::io::ErrorKind::Other, "Thread Panicked"))));
+                    let icmp_ping_result = match tokio::task::spawn_blocking(move || {
+                        let provider = DefaultIcmpProvider::new(identifier);
+                        provider.ping(&target_addr, icmp_seq, timeout_duration)
+                    }).await {
+                        Ok(res) => res,
+                        Err(e) => return Err(ProbeError::Socket(std::io::Error::new(std::io::ErrorKind::Other, format!("Thread Panicked: {}", e)))),
+                    };
 
-                        let timestamp = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or(Duration::from_secs(0))
-                            .as_secs();
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or(Duration::from_secs(0))
+                        .as_secs();
 
-                        let event = TelemetryEvent::Ping {
-                            sequence_number: current_seq,
-                            target_ip: target_ip_clone.to_string(),
-                            result: icmp_ping_result,
-                            timestamp,
-                        };
+                    let event = TelemetryEvent::Ping {
+                        sequence_number: current_seq,
+                        target_ip: self.target_ip.to_string(),
+                        result: icmp_ping_result,
+                        timestamp,
+                    };
 
-                        if let Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) = tx_clone.try_send(event) {
-                            return;
-                        }
-                    });
+                    let _ = tx.try_send(event);
                 }
             }
         }

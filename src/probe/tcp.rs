@@ -39,49 +39,43 @@ impl NetworkProbe for TcpProbe {
                     let current_seq = sequence_counter;
                     let target_addr = self.resolved_addr;
                     let timeout_duration = self.timeout;
-                    let tx_clone = tx.clone();
-                    let target_ip_clone = Arc::clone(&self.target_ip);
 
-                    tokio::spawn(async move {
-                        let start_time = Instant::now();
-                        
-                        let tcp_ping_result = match tokio::time::timeout(
-                            timeout_duration, 
-                            TcpStream::connect(target_addr)
-                        ).await {
-                            Ok(Ok(stream)) => {
-                                let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
-                                
-                                tokio::task::spawn_blocking(move || {
-                                    let sock_ref = socket2::SockRef::from(&stream);
-                                    if let Err(e) = sock_ref.set_linger(Some(Duration::from_secs(0))) {
-                                        tracing::debug!("Failed to set linger (ignoring): {}", e);
-                                    }
-                                    drop(stream);
-                                });
+                    let start_time = Instant::now();
+                    
+                    let tcp_ping_result = match tokio::time::timeout(
+                        timeout_duration, 
+                        TcpStream::connect(target_addr)
+                    ).await {
+                        Ok(Ok(stream)) => {
+                            let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
+                            
+                            let _ = tokio::task::spawn_blocking(move || {
+                                let sock_ref = socket2::SockRef::from(&stream);
+                                if let Err(e) = sock_ref.set_linger(Some(Duration::from_secs(0))) {
+                                    tracing::debug!("Failed to set linger (ignoring): {}", e);
+                                }
+                                drop(stream);
+                            }).await;
 
-                                Ok(elapsed)
-                            },
-                            Ok(Err(e)) => Err(ProbeError::Socket(e)),
-                            Err(_) => Err(ProbeError::TcpTimeout),
-                        };
+                            Ok(elapsed)
+                        },
+                        Ok(Err(e)) => Err(ProbeError::Socket(e)),
+                        Err(_) => Err(ProbeError::TcpTimeout),
+                    };
 
-                        let timestamp = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or(Duration::from_secs(0))
-                            .as_secs();
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or(Duration::from_secs(0))
+                        .as_secs();
 
-                        let event = TelemetryEvent::Tcp {
-                            sequence_number: current_seq,
-                            target_ip: target_ip_clone.to_string(),
-                            result: tcp_ping_result,
-                            timestamp,
-                        };
+                    let event = TelemetryEvent::Tcp {
+                        sequence_number: current_seq,
+                        target_ip: self.target_ip.to_string(),
+                        result: tcp_ping_result,
+                        timestamp,
+                    };
 
-                        if let Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) = tx_clone.try_send(event) {
-                            return;
-                        }
-                    });
+                    let _ = tx.try_send(event);
                 }
             }
         }
