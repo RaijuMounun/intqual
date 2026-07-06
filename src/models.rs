@@ -52,10 +52,3 @@ pub enum BandwidthProgress {
     Uploading { download_result_mbps: f64, current_mbps: f64, progress_pct: f64 },
     Finished { download_mbps: f64, upload_mbps: f64 },
 }
-
-#[derive(Debug)]
-pub enum TelemetryEvent {
-    Ping(PingMetrics),
-    Bandwidth(BandwidthProgress),
-    BandwidthError(ProbeError),
-}

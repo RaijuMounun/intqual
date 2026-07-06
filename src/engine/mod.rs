@@ -1,6 +1,6 @@
 pub mod core_engine;
 
-use crate::models::TelemetryEvent;
+use crate::probe::TelemetryEvent;
 use std::sync::mpsc;
 
 /// The core contract for network engine implementations.

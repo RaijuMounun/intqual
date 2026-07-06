@@ -1,5 +1,6 @@
 use crate::engine::core_engine::EngineCommand;
-use crate::models::{PingMetrics, TelemetryEvent, BandwidthProgress, ProbeError};
+use crate::models::{PingMetrics, BandwidthProgress, ProbeError};
+use crate::probe::TelemetryEvent;
 use crossterm::{
     ExecutableCommand,
     event::{self, Event, KeyCode},
@@ -65,13 +66,62 @@ impl AppState {
         }
     }
 
-    /// Ingests a new metric into the ring buffer.
-    pub fn push_metric(&mut self, metric: PingMetrics) {
-        if metric.sequence_number > self.latest_sequence {
-            self.latest_sequence = metric.sequence_number;
+    pub fn update_icmp(&mut self, seq: u64, target_ip: String, result: std::result::Result<f64, ProbeError>, timestamp: u64) {
+        if seq > self.latest_sequence {
+            self.latest_sequence = seq;
         }
-        let index = (metric.sequence_number % HISTORY_SIZE as u64) as usize;
-        self.history[index] = Some(metric);
+        let index = (seq % HISTORY_SIZE as u64) as usize;
+        if let Some(ref mut metric) = self.history[index] {
+            if metric.sequence_number == seq {
+                metric.icmp_ping = result;
+                metric.timestamp = timestamp;
+            } else {
+                self.history[index] = Some(PingMetrics {
+                    sequence_number: seq,
+                    target_ip,
+                    icmp_ping: result,
+                    tcp_ping: Err(ProbeError::TcpTimeout),
+                    timestamp,
+                });
+            }
+        } else {
+            self.history[index] = Some(PingMetrics {
+                sequence_number: seq,
+                target_ip,
+                icmp_ping: result,
+                tcp_ping: Err(ProbeError::TcpTimeout),
+                timestamp,
+            });
+        }
+    }
+
+    pub fn update_tcp(&mut self, seq: u64, target_ip: String, result: std::result::Result<f64, ProbeError>, timestamp: u64) {
+        if seq > self.latest_sequence {
+            self.latest_sequence = seq;
+        }
+        let index = (seq % HISTORY_SIZE as u64) as usize;
+        if let Some(ref mut metric) = self.history[index] {
+            if metric.sequence_number == seq {
+                metric.tcp_ping = result;
+                metric.timestamp = timestamp;
+            } else {
+                self.history[index] = Some(PingMetrics {
+                    sequence_number: seq,
+                    target_ip,
+                    icmp_ping: Err(ProbeError::IcmpTimeout),
+                    tcp_ping: result,
+                    timestamp,
+                });
+            }
+        } else {
+            self.history[index] = Some(PingMetrics {
+                sequence_number: seq,
+                target_ip,
+                icmp_ping: Err(ProbeError::IcmpTimeout),
+                tcp_ping: result,
+                timestamp,
+            });
+        }
     }
 
     /// Computes diagnostic aggregations (Packet Loss, Avg Jitter) dynamically.
@@ -198,8 +248,12 @@ pub fn run_app(
 
         while let Ok(event) = rx.try_recv() {
             match event {
-                TelemetryEvent::Ping(metric) => {
-                    app.push_metric(metric);
+                TelemetryEvent::Ping { sequence_number, target_ip, result, timestamp } => {
+                    app.update_icmp(sequence_number, target_ip, result, timestamp);
+                    state_changed = true;
+                }
+                TelemetryEvent::Tcp { sequence_number, target_ip, result, timestamp } => {
+                    app.update_tcp(sequence_number, target_ip, result, timestamp);
                     state_changed = true;
                 }
                 TelemetryEvent::Bandwidth(progress) => {
