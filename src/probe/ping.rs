@@ -22,11 +22,14 @@ impl PingProbe {
 }
 
 impl NetworkProbe for PingProbe {
-    async fn run(&mut self, tx: mpsc::Sender<TelemetryEvent>, cancel_token: CancellationToken) -> Result<(), anyhow::Error> {
+    async fn run(&mut self, tx: mpsc::Sender<TelemetryEvent>, cancel_token: CancellationToken) -> Result<(), ProbeError> {
         let mut sequence_counter: u64 = 0;
         let mut interval_timer = tokio::time::interval(self.interval);
 
         loop {
+            if tx.is_closed() {
+                break;
+            }
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     break;
@@ -45,7 +48,7 @@ impl NetworkProbe for PingProbe {
                         let icmp_ping_result = tokio::task::spawn_blocking(move || {
                             let provider = DefaultIcmpProvider::new(identifier);
                             provider.ping(&target_addr, icmp_seq, timeout_duration)
-                        }).await.unwrap_or_else(|_| Err(ProbeError::BandwidthTestFailed("Thread Panicked".to_string())));
+                        }).await.unwrap_or_else(|_| Err(ProbeError::Socket(std::io::Error::new(std::io::ErrorKind::Other, "Thread Panicked"))));
 
                         let timestamp = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
@@ -59,7 +62,9 @@ impl NetworkProbe for PingProbe {
                             timestamp,
                         };
 
-                        let _ = tx_clone.try_send(event);
+                        if let Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) = tx_clone.try_send(event) {
+                            return;
+                        }
                     });
                 }
             }

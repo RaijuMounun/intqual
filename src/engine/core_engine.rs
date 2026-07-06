@@ -127,13 +127,19 @@ impl CoreEngine {
         let tx_ping = tx.clone();
         let token_ping = token.clone();
         tokio::spawn(async move {
-            let _ = ping_probe.run(tx_ping, token_ping).await;
+            if let Err(e) = ping_probe.run(tx_ping.clone(), token_ping).await {
+                tracing::error!("Ping probe encountered fatal error: {:?}", e);
+                let _ = tx_ping.send(TelemetryEvent::Fatal(e)).await;
+            }
         });
 
         let tx_tcp = tx.clone();
         let token_tcp = token.clone();
         tokio::spawn(async move {
-            let _ = tcp_probe.run(tx_tcp, token_tcp).await;
+            if let Err(e) = tcp_probe.run(tx_tcp.clone(), token_tcp).await {
+                tracing::error!("TCP probe encountered fatal error: {:?}", e);
+                let _ = tx_tcp.send(TelemetryEvent::Fatal(e)).await;
+            }
         });
     }
 }

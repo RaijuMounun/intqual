@@ -22,11 +22,14 @@ impl TcpProbe {
 }
 
 impl NetworkProbe for TcpProbe {
-    async fn run(&mut self, tx: mpsc::Sender<TelemetryEvent>, cancel_token: CancellationToken) -> Result<(), anyhow::Error> {
+    async fn run(&mut self, tx: mpsc::Sender<TelemetryEvent>, cancel_token: CancellationToken) -> Result<(), ProbeError> {
         let mut sequence_counter: u64 = 0;
         let mut interval_timer = tokio::time::interval(self.interval);
 
         loop {
+            if tx.is_closed() {
+                break;
+            }
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     break;
@@ -75,7 +78,9 @@ impl NetworkProbe for TcpProbe {
                             timestamp,
                         };
 
-                        let _ = tx_clone.try_send(event);
+                        if let Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) = tx_clone.try_send(event) {
+                            return;
+                        }
                     });
                 }
             }

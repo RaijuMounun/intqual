@@ -276,6 +276,12 @@ pub fn run_app(
                         state_changed = true;
                     }
                 }
+                TelemetryEvent::Fatal(err) => {
+                    app.mode = AppMode::Ping;
+                    app.last_error = Some(format!("FATAL ERROR: {}", err));
+                    let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Stop);
+                    state_changed = true;
+                }
             }
         }
 

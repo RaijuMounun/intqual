@@ -9,8 +9,9 @@ pub enum TelemetryEvent {
     Tcp { sequence_number: u64, target_ip: String, result: Result<f64, ProbeError>, timestamp: u64 },
     Bandwidth(BandwidthProgress),
     BandwidthError(ProbeError),
+    Fatal(ProbeError),
 }
 
 pub trait NetworkProbe: Send + Sync {
-    fn run(&mut self, tx: tokio::sync::mpsc::Sender<TelemetryEvent>, cancel_token: tokio_util::sync::CancellationToken) -> impl std::future::Future<Output = Result<(), anyhow::Error>> + Send;
+    fn run(&mut self, tx: tokio::sync::mpsc::Sender<TelemetryEvent>, cancel_token: tokio_util::sync::CancellationToken) -> impl std::future::Future<Output = Result<(), ProbeError>> + Send;
 }

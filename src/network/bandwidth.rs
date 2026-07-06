@@ -91,7 +91,9 @@ impl BandwidthEngine {
                                         break; // EOF, reconnect
                                     }
                                     Ok(n) => {
-                                        let _ = tx.try_send(n);
+                                        if let Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) = tx.try_send(n) {
+                                            return;
+                                        }
                                     }
                                     Err(e) => {
                                         tracing::debug!("Worker stream error: {}, reconnecting...", e);
