@@ -32,7 +32,7 @@ jobs:
             artifact_name: intqual.exe
             asset_name: intqual-windows-amd64.exe
 
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: intqual
             asset_name: intqual-macos-amd64
