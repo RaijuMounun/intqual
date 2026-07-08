@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use crate::models::{ProbeError, TracerouteHop};
-use crate::network::icmp::{DefaultIcmpProvider, IcmpProvider};
+use crate::network::icmp::{TracerouteIcmpProvider, IcmpProvider};
 use super::{NetworkProbe, TelemetryEvent};
 use crate::network::icmp::packet::IcmpResponse;
 
@@ -36,7 +36,8 @@ impl NetworkProbe for TracerouteProbe {
             let ttl_u32 = ttl as u32;
 
             let hop_result = match tokio::task::spawn_blocking(move || {
-                let provider = DefaultIcmpProvider::new(identifier);
+                tracing::debug!("Sending probe TTL={}, Seq={}, ID={}", ttl_u32, seq, identifier);
+                let provider = TracerouteIcmpProvider::new(identifier);
                 provider.send_with_ttl(&target_addr, seq, ttl_u32, timeout_duration)
             }).await {
                 Ok(res) => res,
@@ -45,6 +46,7 @@ impl NetworkProbe for TracerouteProbe {
 
             match hop_result {
                 Ok(result) => {
+                    tracing::debug!("Received response for TTL={}: {:?}", ttl, result.response);
                     let is_dest = match result.response {
                         IcmpResponse::EchoReply(_) => true,
                         IcmpResponse::TimeExceeded(_) => false,
@@ -68,6 +70,7 @@ impl NetworkProbe for TracerouteProbe {
                     }
                 }
                 Err(ProbeError::IcmpTimeout) => {
+                    tracing::warn!("Timeout/Error for TTL={}: {}", ttl, ProbeError::IcmpTimeout);
                     let hop = TracerouteHop {
                         hop_number: ttl,
                         ip_address: None,
@@ -78,20 +81,9 @@ impl NetworkProbe for TracerouteProbe {
                         break;
                     }
                 }
-                Err(_e) => {
-                    // For any other error (like PermissionDenied), we log/send and break.
-                    // The instructions state: "Eğer Timeout (veya geçici hata) dönerse: ip_address: None olan boş bir TracerouteHop yolla ve devam et."
-                    // Let's treat it as a timeout/empty hop and continue if it's not a fatal socket error? 
-                    // Actually, "geçici hata" means we should just continue.
-                    let hop = TracerouteHop {
-                        hop_number: ttl,
-                        ip_address: None,
-                        rtt_ms: None,
-                        is_destination: false,
-                    };
-                    if tx.try_send(TelemetryEvent::TracerouteHop(hop)).is_err() {
-                        break;
-                    }
+                Err(e) => {
+                    tracing::error!("Fatal Error for TTL={}: {}", ttl, e);
+                    return Err(e);
                 }
             }
         }

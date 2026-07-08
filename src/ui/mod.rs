@@ -25,6 +25,7 @@ pub enum AppMode {
     Ping,
     BandwidthTesting(BandwidthProgress),
     Traceroute,
+    Error(String),
 }
 
 pub struct AppState {
@@ -281,10 +282,9 @@ pub fn run_app(
                     }
                 }
                 TelemetryEvent::Fatal(err) => {
-                    app.mode = AppMode::Ping;
-                    app.active_widgets = vec![Box::new(crate::ui::widgets::latency::LatencyDashboardWidget)];
+                    app.mode = AppMode::Error(err.to_string());
+                    app.active_widgets = vec![Box::new(crate::ui::widgets::error::ErrorWidget::default())];
                     app.last_error = Some(format!("FATAL ERROR: {}", err));
-                    let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Stop);
                     state_changed = true;
                 }
                 TelemetryEvent::TracerouteHop(hop) => {
@@ -333,7 +333,7 @@ pub fn run_app(
                             }
                         }
                     } else if key.code == KeyCode::Esc {
-                        if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..}) | AppMode::Traceroute) {
+                        if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..}) | AppMode::Traceroute | AppMode::Error(_)) {
                             app.mode = AppMode::Ping;
                             app.active_widgets = vec![Box::new(crate::ui::widgets::latency::LatencyDashboardWidget)];
                             app.last_error = None;
@@ -379,11 +379,13 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
     let is_finished = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..}));
     let is_traceroute = matches!(app.mode, AppMode::Traceroute);
 
+    let is_error = matches!(app.mode, AppMode::Error(_));
+
     let nav_text = if is_testing {
         "[Q: Quit] | [Esc: Cancel Test]"
     } else if is_finished {
         "[Q: Quit] | [Enter: Return to Ping]"
-    } else if is_traceroute {
+    } else if is_traceroute || is_error {
         "[Q: Quit] | [Esc: Return to Ping]"
     } else {
         "[Q: Quit] | [S: Speed Test] | [T: Traceroute]"

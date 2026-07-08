@@ -165,10 +165,22 @@ pub struct IcmpDestUnreachable {
 }
 
 impl IcmpResponse {
+    pub fn strip_ipv4_header(buffer: &[u8]) -> &[u8] {
+        if !buffer.is_empty() && (buffer[0] >> 4) == 4 { // IPv4 check
+            let ihl = (buffer[0] & 0x0F) as usize;
+            let header_len = ihl * 4;
+            if buffer.len() >= header_len {
+                return &buffer[header_len..];
+            }
+        }
+        buffer
+    }
+
     pub fn decode(buffer: &[u8]) -> Result<Self, &'static str> {
         if buffer.len() < 8 {
             return Err("Buffer too short");
         }
+        tracing::debug!("Received ICMP Type: {}, Code: {}", buffer[0], buffer[1]);
         match buffer[0] {
             ICMP_TYPE_ECHO_REPLY => Ok(IcmpResponse::EchoReply(IcmpEchoReply::decode(buffer)?)),
             ICMP_TYPE_TIME_EXCEEDED => Ok(IcmpResponse::TimeExceeded(Self::decode_time_exceeded(buffer)?)),
@@ -201,6 +213,7 @@ impl IcmpResponse {
         // [8..X] Original IP Header (usually 20 bytes)
         // [X..X+8] Original ICMP Header
         if buffer.len() < 36 { // 8 + 20 + 8
+            tracing::debug!("Buffer too short for inner payload");
             return Err("Buffer too short to contain original IP and ICMP headers");
         }
         
@@ -214,6 +227,7 @@ impl IcmpResponse {
         let ip_header_len = ihl * 4;
         
         if buffer.len() < 8 + ip_header_len + 8 {
+            tracing::debug!("Buffer too short for inner payload");
             return Err("Buffer too short based on original IHL");
         }
         
@@ -229,6 +243,8 @@ impl IcmpResponse {
         let identifier = u16::from_be_bytes([buffer[orig_icmp_offset + 4], buffer[orig_icmp_offset + 5]]);
         let sequence = u16::from_be_bytes([buffer[orig_icmp_offset + 6], buffer[orig_icmp_offset + 7]]);
         
+        tracing::debug!("Parsed inner payload - Original ID: {}, Original Seq: {}", identifier, sequence);
+
         Ok((identifier, sequence))
     }
 }

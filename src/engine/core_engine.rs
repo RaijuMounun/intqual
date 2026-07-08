@@ -129,7 +129,8 @@ impl CoreEngine {
                             
                             // NetworkProbe trait 'run' requires mut self
                             if let Err(e) = crate::probe::NetworkProbe::run(&mut probe, tx_traceroute.clone(), token).await {
-                                let _ = tx_traceroute.send(TelemetryEvent::TracerouteError(e)).await;
+                                tracing::error!("Traceroute probe encountered fatal error: {:?}", e);
+                                let _ = tx_traceroute.send(TelemetryEvent::Fatal(e)).await;
                             }
                         });
                     }

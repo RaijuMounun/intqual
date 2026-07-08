@@ -53,20 +53,11 @@ impl IcmpProvider for WindowsRawIcmp {
                         std::slice::from_raw_parts(buf.as_ptr() as *const u8, size)
                     };
 
-                    // For RAW sockets on Windows, the IP header (typically 20 bytes) might be included.
-                    // However, we'll try decoding directly first, and if it fails, try with an offset,
-                    // or just let the existing logic handle it as requested.
-                    // The instruction said: "Keep the existing calculate_checksum logic and apply it before sending."
-                    if let Ok(reply) = IcmpEchoReply::decode(initialized_buf) {
+                    let icmp_buf = IcmpResponse::strip_ipv4_header(initialized_buf);
+
+                    if let Ok(reply) = IcmpEchoReply::decode(icmp_buf) {
                         if reply.sequence_number == seq {
                             return Ok(icmp_start.elapsed().as_secs_f64() * 1000.0);
-                        }
-                    } else if size >= 28 {
-                        // Attempt to decode skipping the 20-byte IP header
-                        if let Ok(reply) = IcmpEchoReply::decode(&initialized_buf[20..]) {
-                            if reply.sequence_number == seq {
-                                return Ok(icmp_start.elapsed().as_secs_f64() * 1000.0);
-                            }
                         }
                     }
 
@@ -114,14 +105,8 @@ impl IcmpProvider for WindowsRawIcmp {
                         std::slice::from_raw_parts(buf.as_ptr() as *const u8, size)
                     };
 
-                    let response = IcmpResponse::decode(initialized_buf)
-                        .or_else(|_| {
-                            if size >= 28 {
-                                IcmpResponse::decode(&initialized_buf[20..])
-                            } else {
-                                Err("Buffer too small")
-                            }
-                        });
+                    let icmp_buf = IcmpResponse::strip_ipv4_header(initialized_buf);
+                    let response = IcmpResponse::decode(icmp_buf);
 
                     if let Ok(response) = response {
                         let is_match = match &response {
@@ -138,6 +123,16 @@ impl IcmpProvider for WindowsRawIcmp {
                                 responder_ip,
                                 response,
                             });
+                        } else {
+                            let got_id = match &response {
+                                IcmpResponse::EchoReply(r) => Some(r.identifier),
+                                IcmpResponse::TimeExceeded(t) => Some(t.original_identifier),
+                                IcmpResponse::DestinationUnreachable(d) => Some(d.original_identifier),
+                                IcmpResponse::Unknown { .. } => None,
+                            };
+                            if let Some(got) = got_id {
+                                tracing::debug!("Dropped packet: ID mismatch (Expected: {}, Got: {})", self.identifier, got);
+                            }
                         }
                     }
 
