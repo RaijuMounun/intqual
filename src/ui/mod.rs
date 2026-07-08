@@ -24,6 +24,7 @@ const HISTORY_SIZE: usize = 100;
 pub enum AppMode {
     Ping,
     BandwidthTesting(BandwidthProgress),
+    Traceroute,
 }
 
 pub struct AppState {
@@ -37,6 +38,9 @@ pub struct AppState {
     pub jitter_history: Vec<u64>,
     pub max_ping: f64,
     pub active_widgets: Vec<Box<dyn AppWidget>>,
+    pub traceroute_hops: Vec<crate::models::TracerouteHop>,
+    pub traceroute_complete: bool,
+    pub current_target_ip: String,
 }
 
 impl AppState {
@@ -56,10 +60,14 @@ impl AppState {
             jitter_history: Vec::with_capacity(HISTORY_SIZE),
             max_ping: 50.0,
             active_widgets: vec![Box::new(widgets::latency::LatencyDashboardWidget)],
+            traceroute_hops: Vec::new(),
+            traceroute_complete: false,
+            current_target_ip: String::new(),
         }
     }
 
     pub fn update_icmp(&mut self, seq: u64, target_ip: String, result: std::result::Result<f64, ProbeError>, timestamp: u64) {
+        self.current_target_ip = target_ip.clone();
         if seq > self.latest_sequence {
             self.latest_sequence = seq;
         }
@@ -89,6 +97,7 @@ impl AppState {
     }
 
     pub fn update_tcp(&mut self, seq: u64, target_ip: String, result: std::result::Result<f64, ProbeError>, timestamp: u64) {
+        self.current_target_ip = target_ip.clone();
         if seq > self.latest_sequence {
             self.latest_sequence = seq;
         }
@@ -278,8 +287,17 @@ pub fn run_app(
                     let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Stop);
                     state_changed = true;
                 }
-                TelemetryEvent::TracerouteHop(_) | TelemetryEvent::TracerouteComplete | TelemetryEvent::TracerouteError(_) => {
-                    // Ignored for now (UI integration pending)
+                TelemetryEvent::TracerouteHop(hop) => {
+                    app.traceroute_hops.push(hop);
+                    state_changed = true;
+                }
+                TelemetryEvent::TracerouteComplete => {
+                    app.traceroute_complete = true;
+                    state_changed = true;
+                }
+                TelemetryEvent::TracerouteError(err) => {
+                    app.last_error = Some(format!("Traceroute Error: {}", err));
+                    state_changed = true;
                 }
             }
         }
@@ -303,8 +321,19 @@ pub fn run_app(
                                 tracing::error!("Failed to send EngineCommand: {}", e);
                             }
                         }
+                    } else if key.code == KeyCode::Char('t') {
+                        if !app.current_target_ip.is_empty() {
+                            app.mode = AppMode::Traceroute;
+                            app.traceroute_hops.clear();
+                            app.traceroute_complete = false;
+                            app.last_error = None;
+                            app.active_widgets = vec![Box::new(crate::ui::widgets::traceroute::TracerouteWidget::default())];
+                            if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::StartTraceroute(app.current_target_ip.clone())) {
+                                tracing::error!("Failed to send EngineCommand: {}", e);
+                            }
+                        }
                     } else if key.code == KeyCode::Esc {
-                        if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..})) {
+                        if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..}) | AppMode::Traceroute) {
                             app.mode = AppMode::Ping;
                             app.active_widgets = vec![Box::new(crate::ui::widgets::latency::LatencyDashboardWidget)];
                             app.last_error = None;
@@ -348,13 +377,16 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
 
     let is_testing = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..}));
     let is_finished = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..}));
+    let is_traceroute = matches!(app.mode, AppMode::Traceroute);
 
     let nav_text = if is_testing {
         "[Q: Quit] | [Esc: Cancel Test]"
     } else if is_finished {
         "[Q: Quit] | [Enter: Return to Ping]"
+    } else if is_traceroute {
+        "[Q: Quit] | [Esc: Return to Ping]"
     } else {
-        "[Q: Quit] | [S: Speed Test]"
+        "[Q: Quit] | [S: Speed Test] | [T: Traceroute]"
     };
 
     let top_bar = Paragraph::new(nav_text)

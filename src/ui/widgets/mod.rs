@@ -7,3 +7,4 @@ pub trait AppWidget: Send + Sync {
 
 pub mod latency;
 pub mod bandwidth;
+pub mod traceroute;
