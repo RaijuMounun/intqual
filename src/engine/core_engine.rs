@@ -6,12 +6,13 @@ use tokio_util::sync::CancellationToken;
 use crate::models::ProbeError;
 use crate::probe::{NetworkProbe, TelemetryEvent, ping::PingProbe, tcp::TcpProbe};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineCommand {
     Pause,
     Resume,
     Stop,
     StartBandwidthTest,
+    StartTraceroute(String),
 }
 
 pub struct CoreEngine {
@@ -104,6 +105,31 @@ impl CoreEngine {
 
                             if let Err(e) = result {
                                 let _ = tx_for_bw.try_send(TelemetryEvent::BandwidthError(e));
+                            }
+                        });
+                    },
+                    EngineCommand::StartTraceroute(target) => {
+                        if let Some(token) = active_token.take() {
+                            token.cancel(); // Pause ping/tcp while tracerouting
+                        }
+
+                        let tx_traceroute = tx.clone();
+                        let token = CancellationToken::new();
+                        let identifier = icmp_identifier;
+                        let addr = resolved_addr;
+                        
+                        tokio::spawn(async move {
+                            let mut probe = crate::probe::traceroute::TracerouteProbe::new(
+                                Arc::new(target), 
+                                addr, 
+                                Duration::from_millis(1000), 
+                                30, 
+                                identifier
+                            );
+                            
+                            // NetworkProbe trait 'run' requires mut self
+                            if let Err(e) = crate::probe::NetworkProbe::run(&mut probe, tx_traceroute.clone(), token).await {
+                                let _ = tx_traceroute.send(TelemetryEvent::TracerouteError(e)).await;
                             }
                         });
                     }

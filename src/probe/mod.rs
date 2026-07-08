@@ -1,7 +1,8 @@
 pub mod ping;
 pub mod tcp;
+pub mod traceroute;
 
-use crate::models::{ProbeError, BandwidthProgress};
+use crate::models::{ProbeError, BandwidthProgress, TracerouteHop};
 
 #[derive(Debug)]
 pub enum TelemetryEvent {
@@ -9,6 +10,9 @@ pub enum TelemetryEvent {
     Tcp { sequence_number: u64, target_ip: String, result: Result<f64, ProbeError>, timestamp: u64 },
     Bandwidth(BandwidthProgress),
     BandwidthError(ProbeError),
+    TracerouteHop(TracerouteHop),
+    TracerouteComplete,
+    TracerouteError(ProbeError),
     Fatal(ProbeError),
 }
 

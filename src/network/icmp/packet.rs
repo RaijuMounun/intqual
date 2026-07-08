@@ -95,8 +95,9 @@ impl IcmpEchoRequest {
 }
 
 
-/// ICMP Type for an Echo Reply
-const ICMP_TYPE_ECHO_REPLY: u8 = 0;
+pub const ICMP_TYPE_ECHO_REPLY: u8 = 0;
+pub const ICMP_TYPE_DEST_UNREACHABLE: u8 = 3;
+pub const ICMP_TYPE_TIME_EXCEEDED: u8 = 11;
 
 /// Represents an incoming ICMP Echo Reply Packet.
 #[derive(Debug)]
@@ -138,5 +139,96 @@ impl IcmpEchoReply {
             identifier,
             sequence_number,
         })
+    }
+}
+
+#[derive(Debug)]
+pub enum IcmpResponse {
+    EchoReply(IcmpEchoReply),
+    TimeExceeded(IcmpTimeExceeded),
+    DestinationUnreachable(IcmpDestUnreachable),
+    Unknown { type_: u8, code: u8 },
+}
+
+#[derive(Debug)]
+pub struct IcmpTimeExceeded {
+    pub code: u8,
+    pub original_identifier: u16,
+    pub original_sequence: u16,
+}
+
+#[derive(Debug)]
+pub struct IcmpDestUnreachable {
+    pub code: u8,
+    pub original_identifier: u16,
+    pub original_sequence: u16,
+}
+
+impl IcmpResponse {
+    pub fn decode(buffer: &[u8]) -> Result<Self, &'static str> {
+        if buffer.len() < 8 {
+            return Err("Buffer too short");
+        }
+        match buffer[0] {
+            ICMP_TYPE_ECHO_REPLY => Ok(IcmpResponse::EchoReply(IcmpEchoReply::decode(buffer)?)),
+            ICMP_TYPE_TIME_EXCEEDED => Ok(IcmpResponse::TimeExceeded(Self::decode_time_exceeded(buffer)?)),
+            ICMP_TYPE_DEST_UNREACHABLE => Ok(IcmpResponse::DestinationUnreachable(Self::decode_dest_unreachable(buffer)?)),
+            t => Ok(IcmpResponse::Unknown { type_: t, code: buffer[1] }),
+        }
+    }
+
+    fn decode_time_exceeded(buffer: &[u8]) -> Result<IcmpTimeExceeded, &'static str> {
+        let (identifier, sequence) = Self::decode_error_body(buffer)?;
+        Ok(IcmpTimeExceeded {
+            code: buffer[1],
+            original_identifier: identifier,
+            original_sequence: sequence,
+        })
+    }
+
+    fn decode_dest_unreachable(buffer: &[u8]) -> Result<IcmpDestUnreachable, &'static str> {
+        let (identifier, sequence) = Self::decode_error_body(buffer)?;
+        Ok(IcmpDestUnreachable {
+            code: buffer[1],
+            original_identifier: identifier,
+            original_sequence: sequence,
+        })
+    }
+
+    fn decode_error_body(buffer: &[u8]) -> Result<(u16, u16), &'static str> {
+        // Buffer layout (DGRAM/RAW ICMP payload):
+        // [0..8] ICMP Header (Time Exceeded / Dest Unreachable)
+        // [8..X] Original IP Header (usually 20 bytes)
+        // [X..X+8] Original ICMP Header
+        if buffer.len() < 36 { // 8 + 20 + 8
+            return Err("Buffer too short to contain original IP and ICMP headers");
+        }
+        
+        // Ensure it's an IPv4 header by checking version (first 4 bits)
+        let ip_version = buffer[8] >> 4;
+        if ip_version != 4 {
+            return Err("Original IP header is not IPv4");
+        }
+        
+        let ihl = (buffer[8] & 0x0F) as usize;
+        let ip_header_len = ihl * 4;
+        
+        if buffer.len() < 8 + ip_header_len + 8 {
+            return Err("Buffer too short based on original IHL");
+        }
+        
+        // Offset 9 in IP header is the Protocol field
+        if buffer[8 + 9] != 1 /* ICMP */ {
+            return Err("Original protocol was not ICMP");
+        }
+        
+        let orig_icmp_offset = 8 + ip_header_len;
+        
+        // Extract identifier and sequence from original ICMP header
+        // Identifier is at offset 4, Sequence is at offset 6
+        let identifier = u16::from_be_bytes([buffer[orig_icmp_offset + 4], buffer[orig_icmp_offset + 5]]);
+        let sequence = u16::from_be_bytes([buffer[orig_icmp_offset + 6], buffer[orig_icmp_offset + 7]]);
+        
+        Ok((identifier, sequence))
     }
 }

@@ -52,3 +52,11 @@ pub enum BandwidthProgress {
     Uploading { download_result_mbps: f64, current_mbps: f64, progress_pct: f64 },
     Finished { download_mbps: f64, upload_mbps: f64 },
 }
+
+#[derive(Debug, Clone)]
+pub struct TracerouteHop {
+    pub hop_number: u8,
+    pub ip_address: Option<String>,
+    pub rtt_ms: Option<f64>,
+    pub is_destination: bool,
+}

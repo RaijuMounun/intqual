@@ -278,6 +278,9 @@ pub fn run_app(
                     let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Stop);
                     state_changed = true;
                 }
+                TelemetryEvent::TracerouteHop(_) | TelemetryEvent::TracerouteComplete | TelemetryEvent::TracerouteError(_) => {
+                    // Ignored for now (UI integration pending)
+                }
             }
         }
 
