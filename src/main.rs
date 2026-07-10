@@ -6,7 +6,7 @@ pub mod probe;
 pub mod utils;
 
 use clap::Parser;
-use engine::CoreEngine;
+
 use tokio::sync::mpsc;
 
 /// Defines the Command Line Interface (CLI) schema.
@@ -36,6 +36,10 @@ struct Cli {
     /// reactor if a target network blackholes our packets.
     #[arg(short = 't', long, default_value_t = 1000)]
     timeout: u64,
+
+    /// Use the mock engine (simulates network without real packets)
+    #[arg(long)]
+    mock: bool,
 }
 
 /// The asynchronous application entry point.
@@ -66,11 +70,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Instantiate the engine with injected configurations.
     // Dependency Injection Keeps the engine pure and testable without hardcoding CLI contexts.
-    let core_engine = CoreEngine::new(cli.target, cli.port, cli.interval, cli.timeout);
+    let engine: Box<dyn engine::NetworkEngine> = if cli.mock {
+        Box::new(engine::MockEngine::new())
+    } else {
+        Box::new(engine::CoreEngine::new(cli.target, cli.port, cli.interval, cli.timeout))
+    };
 
     // 4. Ignite the async engine in the background (Fire and Forget).
     // The engine will spawn its own detached micro-tasks and asynchronously push data into `tx`.
-    core_engine.start(tx.clone(), cmd_rx).await;
+    engine.start(tx.clone(), cmd_rx).await;
 
     // 5. Transfer control of the main OS thread to the UI event loop.
     // WHY: Terminal rendering (crossterm) is inherently synchronous and blocking. 

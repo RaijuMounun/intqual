@@ -31,9 +31,12 @@ impl CoreEngine {
             timeout: Duration::from_millis(timeout_ms),
         }
     }
+}
 
-    pub async fn start(self, tx: mpsc::Sender<TelemetryEvent>, mut cmd_rx: mpsc::Receiver<EngineCommand>) {
-        let addr_string = format!("{}:{}", self.target_ip, self.target_port);
+impl super::NetworkEngine for CoreEngine {
+    fn start(self: Box<Self>, tx: mpsc::Sender<TelemetryEvent>, mut cmd_rx: mpsc::Receiver<EngineCommand>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            let addr_string = format!("{}:{}", self.target_ip, self.target_port);
         let resolved_addr: SocketAddr = match tokio::net::lookup_host(&addr_string).await {
             Ok(mut addrs) => {
                 if let Some(addr) = addrs.next() {
@@ -137,8 +140,11 @@ impl CoreEngine {
                 }
             }
         });
+        })
     }
+}
 
+impl CoreEngine {
     fn spawn_probes(
         target_ip: &Arc<String>,
         resolved_addr: SocketAddr,
