@@ -42,12 +42,9 @@ impl NetworkProbe for PingProbe {
                     let timeout_duration = self.timeout;
                     let identifier = self.icmp_identifier;
 
-                    let icmp_ping_result = match tokio::task::spawn_blocking(move || {
+                    let icmp_ping_result = {
                         let provider = DefaultIcmpProvider::new(identifier);
-                        provider.ping(&target_addr, icmp_seq, timeout_duration)
-                    }).await {
-                        Ok(res) => res,
-                        Err(e) => return Err(ProbeError::Socket(std::io::Error::other(format!("Thread Panicked: {}", e)))),
+                        provider.ping(&target_addr, icmp_seq, timeout_duration).await
                     };
 
                     let timestamp = crate::utils::current_timestamp();

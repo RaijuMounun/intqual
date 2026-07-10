@@ -42,13 +42,10 @@ impl NetworkProbe for TracerouteProbe {
                 let identifier = self.icmp_identifier;
                 let ttl_u32 = ttl as u32;
 
-                let hop_result = match tokio::task::spawn_blocking(move || {
+                let hop_result = {
                     tracing::debug!("Sending probe TTL={}, Seq={}, ID={}", ttl_u32, seq, identifier);
                     let provider = TracerouteIcmpProvider::new(identifier);
-                    provider.send_with_ttl(&target_addr, seq, ttl_u32, timeout_duration)
-                }).await {
-                    Ok(res) => res,
-                    Err(e) => return Err(ProbeError::Socket(std::io::Error::other(format!("Thread Panicked: {}", e)))),
+                    provider.send_with_ttl(&target_addr, seq, ttl_u32, timeout_duration).await
                 };
 
                 match hop_result {
