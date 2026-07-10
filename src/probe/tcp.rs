@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 use tokio::sync::mpsc;
@@ -63,10 +63,7 @@ impl NetworkProbe for TcpProbe {
                         Err(_) => Err(ProbeError::TcpTimeout),
                     };
 
-                    let timestamp = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or(Duration::from_secs(0))
-                        .as_secs();
+                    let timestamp = crate::utils::current_timestamp();
 
                     let event = TelemetryEvent::Tcp {
                         sequence_number: current_seq,

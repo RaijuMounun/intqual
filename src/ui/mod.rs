@@ -20,6 +20,12 @@ use widgets::AppWidget;
 
 const HISTORY_SIZE: usize = 100;
 
+#[must_use]
+pub enum RenderAction {
+    Redraw,
+    Skip,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppMode {
     Ping,
@@ -28,38 +34,95 @@ pub enum AppMode {
     Error(String),
 }
 
+#[derive(Default, Debug, Clone)]
+pub struct NetworkStats {
+    pub loss_pct: f64,
+    pub avg_jitter: f64,
+    pub min_ping: f64,
+    pub max_ping: f64,
+    pub current_jitter: f64,
+    
+    pub total_count: u64,
+    pub loss_count: u64,
+    pub jitter_sum: f64,
+    pub jitter_count: u64,
+    pub last_ping: Option<f64>,
+}
+
+impl NetworkStats {
+    pub fn update(&mut self, result: &std::result::Result<f64, ProbeError>) {
+        self.total_count += 1;
+        match result {
+            Ok(ping) => {
+                let p = *ping;
+                if p > self.max_ping { self.max_ping = p; }
+                if self.min_ping == 0.0 || p < self.min_ping { self.min_ping = p; }
+                
+                if let Some(last) = self.last_ping {
+                    self.current_jitter = (p - last).abs();
+                    self.jitter_sum += self.current_jitter;
+                    self.jitter_count += 1;
+                    self.avg_jitter = self.jitter_sum / self.jitter_count as f64;
+                } else {
+                    self.current_jitter = 0.0;
+                }
+                self.last_ping = Some(p);
+            }
+            Err(ProbeError::IcmpTimeout) | Err(ProbeError::TcpTimeout) => {
+                self.loss_count += 1;
+            }
+            Err(_) => {}
+        }
+        
+        if self.total_count > 0 {
+            self.loss_pct = (self.loss_count as f64 / self.total_count as f64) * 100.0;
+        }
+    }
+}
+
 pub struct AppState {
-    pub history: Vec<Option<PingMetrics>>,
     pub latest_sequence: u64,
     pub mode: AppMode,
     pub last_speed_test: Option<(f64, f64)>, // (Down, Up)
     pub last_error: Option<String>,
+    
+    // Push-based stats and chart data
+    pub icmp_stats: NetworkStats,
+    pub tcp_stats: NetworkStats,
     pub icmp_data: Vec<(f64, f64)>,
     pub tcp_data: Vec<(f64, f64)>,
     pub jitter_history: Vec<u64>,
-    pub max_ping: f64,
+    pub chart_max_ping: f64,
+    
+    // For single-frame display
+    pub latest_metric: Option<PingMetrics>,
+    
     pub active_widgets: Vec<Box<dyn AppWidget>>,
     pub traceroute_hops: Vec<crate::models::TracerouteHop>,
     pub traceroute_complete: bool,
     pub current_target_ip: String,
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AppState {
     pub fn new() -> Self {
-        let mut history = Vec::with_capacity(HISTORY_SIZE);
-        for _ in 0..HISTORY_SIZE {
-            history.push(None);
-        }
         Self {
-            history,
             latest_sequence: 0,
             mode: AppMode::Ping,
             last_speed_test: None,
             last_error: None,
-            icmp_data: Vec::with_capacity(HISTORY_SIZE),
-            tcp_data: Vec::with_capacity(HISTORY_SIZE),
-            jitter_history: Vec::with_capacity(HISTORY_SIZE),
-            max_ping: 50.0,
+            icmp_stats: NetworkStats::default(),
+            tcp_stats: NetworkStats::default(),
+            icmp_data: Vec::with_capacity(HISTORY_SIZE + 1),
+            tcp_data: Vec::with_capacity(HISTORY_SIZE + 1),
+            jitter_history: Vec::with_capacity(HISTORY_SIZE + 1),
+            chart_max_ping: 50.0,
+            latest_metric: None,
             active_widgets: vec![Box::new(widgets::latency::LatencyDashboardWidget)],
             traceroute_hops: Vec::new(),
             traceroute_complete: false,
@@ -67,160 +130,159 @@ impl AppState {
         }
     }
 
-    pub fn update_icmp(&mut self, seq: u64, target_ip: String, result: std::result::Result<f64, ProbeError>, timestamp: u64) {
-        self.current_target_ip = target_ip.clone();
-        if seq > self.latest_sequence {
-            self.latest_sequence = seq;
-        }
-        let index = (seq % HISTORY_SIZE as u64) as usize;
-        if let Some(ref mut metric) = self.history[index] {
-            if metric.sequence_number == seq {
-                metric.icmp_ping = result;
-                metric.timestamp = timestamp;
-            } else {
-                self.history[index] = Some(PingMetrics {
-                    sequence_number: seq,
-                    target_ip,
-                    icmp_ping: result,
-                    tcp_ping: Err(ProbeError::TcpTimeout),
-                    timestamp,
-                });
-            }
-        } else {
-            self.history[index] = Some(PingMetrics {
-                sequence_number: seq,
-                target_ip,
-                icmp_ping: result,
-                tcp_ping: Err(ProbeError::TcpTimeout),
-                timestamp,
-            });
-        }
-    }
-
-    pub fn update_tcp(&mut self, seq: u64, target_ip: String, result: std::result::Result<f64, ProbeError>, timestamp: u64) {
-        self.current_target_ip = target_ip.clone();
-        if seq > self.latest_sequence {
-            self.latest_sequence = seq;
-        }
-        let index = (seq % HISTORY_SIZE as u64) as usize;
-        if let Some(ref mut metric) = self.history[index] {
-            if metric.sequence_number == seq {
-                metric.tcp_ping = result;
-                metric.timestamp = timestamp;
-            } else {
-                self.history[index] = Some(PingMetrics {
-                    sequence_number: seq,
-                    target_ip,
-                    icmp_ping: Err(ProbeError::IcmpTimeout),
-                    tcp_ping: result,
-                    timestamp,
-                });
-            }
-        } else {
-            self.history[index] = Some(PingMetrics {
-                sequence_number: seq,
-                target_ip,
-                icmp_ping: Err(ProbeError::IcmpTimeout),
-                tcp_ping: result,
-                timestamp,
-            });
-        }
-    }
-
-    /// Computes diagnostic aggregations (Packet Loss, Avg Jitter) dynamically.
-    /// O(N) Compute: Calculating stats on-the-fly during the render loop is intentionally
-    /// chosen over maintaining stateful counters. It guarantees mathematical accuracy based
-    /// strictly on the visible window and eliminates memory duplication overhead.
-    pub fn calculate_stats(&self) -> (f64, f64) {
-        let mut loss_count = 0;
-        let mut total_count = 0;
-
-        let mut last_ping: Option<f64> = None;
-        let mut jitter_sum = 0.0;
-        let mut jitter_count = 0;
-
-        let start_seq = self.latest_sequence.saturating_sub(HISTORY_SIZE as u64);
-
-        for seq in start_seq..=self.latest_sequence {
-            let idx = (seq % HISTORY_SIZE as u64) as usize;
-            if let Some(ref metric) = self.history[idx] {
-                if metric.sequence_number == seq {
-                    total_count += 1;
-
-                    match metric.icmp_ping {
-                        Ok(ping) => {
-                            if let Some(last) = last_ping {
-                                jitter_sum += (ping - last).abs();
-                                jitter_count += 1;
-                            }
-                            last_ping = Some(ping);
-                        }
-                        Err(ProbeError::IcmpTimeout) => {
-                            loss_count += 1;
-                        }
-                        Err(_) => {
-                            // Systemic failures (PermissionDenied, Socket) are not network loss
-                        }
-                    }
-                }
-            }
-        }
-
-        let loss_pct = if total_count > 0 {
-            (loss_count as f64 / total_count as f64) * 100.0
-        } else {
-            0.0
-        };
-
-        let avg_jitter = if jitter_count > 0 {
-            jitter_sum / jitter_count as f64
-        } else {
-            0.0
-        };
-
-        (loss_pct, avg_jitter)
-    }
-
-    pub fn prepare_render_data(&mut self) {
+    pub fn reset_ping_state(&mut self) {
+        self.icmp_stats = NetworkStats::default();
+        self.tcp_stats = NetworkStats::default();
         self.icmp_data.clear();
         self.tcp_data.clear();
         self.jitter_history.clear();
-        self.max_ping = 50.0;
+        self.chart_max_ping = 50.0;
+        self.latest_sequence = 0;
+        self.latest_metric = None;
+    }
 
-        let start_seq = self.latest_sequence.saturating_sub(HISTORY_SIZE as u64);
-        let mut last_icmp_ping: Option<f64> = None;
+    fn push_chart_data<T>(vec: &mut Vec<T>, item: T) {
+        vec.push(item);
+        if vec.len() > HISTORY_SIZE {
+            vec.remove(0);
+        }
+    }
 
-        for seq in start_seq..=self.latest_sequence {
-            let idx = (seq % HISTORY_SIZE as u64) as usize;
-            if let Some(ref metric) = self.history[idx] {
-                if metric.sequence_number == seq {
-                    if let Ok(ping) = metric.icmp_ping {
-                        self.icmp_data.push((seq as f64, ping));
-                        if ping > self.max_ping {
-                            self.max_ping = ping;
-                        }
+    fn update_chart_max_ping(&mut self) {
+        let mut max = 50.0;
+        for &(_, p) in &self.icmp_data {
+            if p > max { max = p; }
+        }
+        for &(_, p) in &self.tcp_data {
+            if p > max { max = p; }
+        }
+        self.chart_max_ping = max;
+    }
 
-                        if let Some(last) = last_icmp_ping {
-                            let j = (ping - last).abs();
-                            self.jitter_history.push(j.round() as u64);
-                        } else {
-                            self.jitter_history.push(0);
-                        }
-                        last_icmp_ping = Some(ping);
-                    } else {
-                        self.icmp_data.push((seq as f64, 0.0));
-                        self.jitter_history.push(0);
-                    }
-
-                    if let Ok(ping) = metric.tcp_ping {
-                        self.tcp_data.push((seq as f64, ping));
-                        if ping > self.max_ping {
-                            self.max_ping = ping;
-                        }
-                    }
+    pub fn handle_event(&mut self, event: TelemetryEvent, _cmd_tx: &mpsc::Sender<EngineCommand>) -> RenderAction {
+        match event {
+            TelemetryEvent::Ping { sequence_number, target_ip, result, timestamp } => {
+                self.current_target_ip = target_ip.clone();
+                if sequence_number > self.latest_sequence {
+                    self.latest_sequence = sequence_number;
                 }
-            } else {
-                self.jitter_history.push(0);
+                
+                self.icmp_stats.update(&result);
+                
+                let p_val = match &result {
+                    Ok(p) => *p,
+                    Err(_) => 0.0,
+                };
+                Self::push_chart_data(&mut self.icmp_data, (sequence_number as f64, p_val));
+                
+                if result.is_ok() {
+                    let j = self.icmp_stats.current_jitter.round() as u64;
+                    Self::push_chart_data(&mut self.jitter_history, j);
+                    
+                    if let Ok(ping) = result
+                        && ping > self.chart_max_ping {
+                            self.chart_max_ping = ping;
+                    }
+                } else {
+                    Self::push_chart_data(&mut self.jitter_history, 0);
+                }
+                
+                // If this packet fell out of the window and it was the max, recompute
+                if self.icmp_data.len() == HISTORY_SIZE {
+                    self.update_chart_max_ping();
+                }
+
+                if let Some(ref mut metric) = self.latest_metric {
+                    metric.sequence_number = sequence_number;
+                    metric.target_ip = target_ip;
+                    metric.icmp_ping = result;
+                    metric.timestamp = timestamp;
+                } else {
+                    self.latest_metric = Some(PingMetrics {
+                        sequence_number,
+                        target_ip,
+                        icmp_ping: result,
+                        tcp_ping: Err(ProbeError::TcpTimeout),
+                        timestamp,
+                    });
+                }
+                
+                RenderAction::Redraw
+            }
+            TelemetryEvent::Tcp { sequence_number, target_ip, result, timestamp } => {
+                self.current_target_ip = target_ip.clone();
+                if sequence_number > self.latest_sequence {
+                    self.latest_sequence = sequence_number;
+                }
+                
+                self.tcp_stats.update(&result);
+                
+                let p_val = match &result {
+                    Ok(p) => *p,
+                    Err(_) => 0.0,
+                };
+                Self::push_chart_data(&mut self.tcp_data, (sequence_number as f64, p_val));
+                
+                if let Ok(ping) = result
+                    && ping > self.chart_max_ping {
+                        self.chart_max_ping = ping;
+                }
+                
+                if self.tcp_data.len() == HISTORY_SIZE {
+                    self.update_chart_max_ping();
+                }
+
+                if let Some(ref mut metric) = self.latest_metric {
+                    metric.sequence_number = sequence_number;
+                    metric.target_ip = target_ip;
+                    metric.tcp_ping = result;
+                    metric.timestamp = timestamp;
+                } else {
+                    self.latest_metric = Some(PingMetrics {
+                        sequence_number,
+                        target_ip,
+                        icmp_ping: Err(ProbeError::IcmpTimeout),
+                        tcp_ping: result,
+                        timestamp,
+                    });
+                }
+                
+                RenderAction::Redraw
+            }
+            TelemetryEvent::Bandwidth(progress) => {
+                self.last_error = None;
+                if let BandwidthProgress::Finished { download_mbps, upload_mbps } = &progress {
+                    self.last_speed_test = Some((*download_mbps, *upload_mbps));
+                }
+                self.mode = AppMode::BandwidthTesting(progress);
+                self.active_widgets = vec![Box::new(crate::ui::widgets::bandwidth::BandwidthWidget)];
+                RenderAction::Redraw
+            }
+            TelemetryEvent::BandwidthError(err) => {
+                if matches!(self.mode, AppMode::BandwidthTesting(_)) {
+                    self.mode = AppMode::BandwidthTesting(BandwidthProgress::Failed(err.to_string()));
+                    RenderAction::Redraw
+                } else {
+                    RenderAction::Skip
+                }
+            }
+            TelemetryEvent::Fatal(err) => {
+                self.mode = AppMode::Error(err.to_string());
+                self.active_widgets = vec![Box::new(crate::ui::widgets::error::ErrorWidget)];
+                self.last_error = Some(format!("FATAL ERROR: {}", err));
+                RenderAction::Redraw
+            }
+            TelemetryEvent::TracerouteHop(hop) => {
+                self.traceroute_hops.push(hop);
+                RenderAction::Redraw
+            }
+            TelemetryEvent::TracerouteComplete => {
+                self.traceroute_complete = true;
+                RenderAction::Redraw
+            }
+            TelemetryEvent::TracerouteError(err) => {
+                self.last_error = Some(format!("Traceroute Error: {}", err));
+                RenderAction::Redraw
             }
         }
     }
@@ -243,67 +305,15 @@ pub fn run_app(
 
     // THE IMMEDIATE-MODE GUI LOOP
     loop {
-        // Dirty Flag: Terminates redundant GPU/Compositor rendering.
-        // Re-rendering 60+ FPS in a terminal causes severe compositor timeouts
-        // (e.g., KDE KWin, WebGL environments) and CPU spikes. We strictly only issue
-        // a draw command if new data has actively altered the state.
-        let mut state_changed = false;
+        let mut should_redraw = false;
 
         while let Ok(event) = rx.try_recv() {
-            match event {
-                TelemetryEvent::Ping { sequence_number, target_ip, result, timestamp } => {
-                    app.update_icmp(sequence_number, target_ip, result, timestamp);
-                    state_changed = true;
-                }
-                TelemetryEvent::Tcp { sequence_number, target_ip, result, timestamp } => {
-                    app.update_tcp(sequence_number, target_ip, result, timestamp);
-                    state_changed = true;
-                }
-                TelemetryEvent::Bandwidth(progress) => {
-                    app.last_error = None;
-                    if let BandwidthProgress::Finished { download_mbps, upload_mbps } = &progress {
-                        app.last_speed_test = Some((*download_mbps, *upload_mbps));
-                    }
-                    app.mode = AppMode::BandwidthTesting(progress);
-                    app.active_widgets = vec![Box::new(crate::ui::widgets::bandwidth::BandwidthWidget)];
-                    state_changed = true;
-                }
-                TelemetryEvent::BandwidthError(err) => {
-                    if let AppMode::Ping = app.mode {
-                        // Ignore stale errors if already manually aborted
-                    } else {
-                        app.mode = AppMode::Ping;
-                        app.active_widgets = vec![Box::new(crate::ui::widgets::latency::LatencyDashboardWidget)];
-                        app.last_error = Some(err.to_string());
-                        if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
-                            tracing::error!("Failed to send EngineCommand: {}", e);
-                        }
-                        state_changed = true;
-                    }
-                }
-                TelemetryEvent::Fatal(err) => {
-                    app.mode = AppMode::Error(err.to_string());
-                    app.active_widgets = vec![Box::new(crate::ui::widgets::error::ErrorWidget::default())];
-                    app.last_error = Some(format!("FATAL ERROR: {}", err));
-                    state_changed = true;
-                }
-                TelemetryEvent::TracerouteHop(hop) => {
-                    app.traceroute_hops.push(hop);
-                    state_changed = true;
-                }
-                TelemetryEvent::TracerouteComplete => {
-                    app.traceroute_complete = true;
-                    state_changed = true;
-                }
-                TelemetryEvent::TracerouteError(err) => {
-                    app.last_error = Some(format!("Traceroute Error: {}", err));
-                    state_changed = true;
-                }
+            if matches!(app.handle_event(event, &cmd_tx), RenderAction::Redraw) {
+                should_redraw = true;
             }
         }
 
-        if state_changed {
-            app.prepare_render_data();
+        if should_redraw {
             terminal.draw(|frame| draw_ui(frame, &app))?;
         }
 
@@ -327,13 +337,14 @@ pub fn run_app(
                             app.traceroute_hops.clear();
                             app.traceroute_complete = false;
                             app.last_error = None;
-                            app.active_widgets = vec![Box::new(crate::ui::widgets::traceroute::TracerouteWidget::default())];
+                            app.active_widgets = vec![Box::new(crate::ui::widgets::traceroute::TracerouteWidget)];
                             if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::StartTraceroute(app.current_target_ip.clone())) {
                                 tracing::error!("Failed to send EngineCommand: {}", e);
                             }
                         }
                     } else if key.code == KeyCode::Esc {
-                        if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..}) | AppMode::Traceroute | AppMode::Error(_)) {
+                        if matches!(app.mode, AppMode::BandwidthTesting(_) | AppMode::Traceroute | AppMode::Error(_)) {
+                            app.reset_ping_state();
                             app.mode = AppMode::Ping;
                             app.active_widgets = vec![Box::new(crate::ui::widgets::latency::LatencyDashboardWidget)];
                             app.last_error = None;
@@ -341,15 +352,15 @@ pub fn run_app(
                                 tracing::error!("Failed to send EngineCommand: {}", e);
                             }
                         }
-                    } else if key.code == KeyCode::Enter {
-                        if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..})) {
+                    } else if key.code == KeyCode::Enter
+                        && matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..}) | AppMode::BandwidthTesting(BandwidthProgress::Failed(_)) | AppMode::Traceroute | AppMode::Error(_)) {
+                            app.reset_ping_state();
                             app.mode = AppMode::Ping;
                             app.active_widgets = vec![Box::new(crate::ui::widgets::latency::LatencyDashboardWidget)];
                             app.last_error = None;
                             if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
                                 tracing::error!("Failed to send EngineCommand: {}", e);
                             }
-                        }
                     }
                 }
                 Event::Resize(_, _) => {
@@ -376,16 +387,16 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
         .split(area);
 
     let is_testing = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..}));
-    let is_finished = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..}));
+    let is_finished_or_failed = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..} | BandwidthProgress::Failed(_)));
     let is_traceroute = matches!(app.mode, AppMode::Traceroute);
 
     let is_error = matches!(app.mode, AppMode::Error(_));
 
     let nav_text = if is_testing {
         "[Q: Quit] | [Esc: Cancel Test]"
-    } else if is_finished {
+    } else if is_finished_or_failed || is_traceroute {
         "[Q: Quit] | [Enter: Return to Ping]"
-    } else if is_traceroute || is_error {
+    } else if is_error {
         "[Q: Quit] | [Esc: Return to Ping]"
     } else {
         "[Q: Quit] | [S: Speed Test] | [T: Traceroute]"

@@ -17,15 +17,13 @@ impl AppWidget for LatencyDashboardWidget {
             .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
             .split(area);
 
-        let start_seq = app.latest_sequence.saturating_sub(100 as u64); // HISTORY_SIZE is 100
-        let (loss_pct, jitter) = app.calculate_stats();
-        let latest_idx = (app.latest_sequence % 100 as u64) as usize;
+        let start_seq = app.latest_sequence.saturating_sub(100_u64); // HISTORY_SIZE is 100
+        let loss_pct = app.icmp_stats.loss_pct;
+        let jitter = app.icmp_stats.avg_jitter;
 
         let mut stats_lines = Vec::new();
 
-        if app.latest_sequence == 0 {
-            stats_lines.push(Line::from("  Waiting for data..."));
-        } else if let Some(ref metric) = app.history[latest_idx] {
+        if let Some(ref metric) = app.latest_metric {
             let mut perm_denied = false;
             let (icmp_str, icmp_color_override) = match &metric.icmp_ping {
                 Ok(ms) => (format!("{:.1} ms", ms), None),
@@ -83,6 +81,21 @@ impl AppWidget for LatencyDashboardWidget {
             stats_lines.push(Line::from(vec![Span::styled(format!(" {:.1}%", loss_pct), loss_style)]));
             stats_lines.push(Line::from(""));
             stats_lines.push(Line::from(vec![Span::styled(format!(" Seq ID: {}", metric.sequence_number), Style::default().fg(Color::DarkGray))]));
+        } else {
+            stats_lines.push(Line::from("  Waiting for data..."));
+        }
+
+        if let Some((down, up)) = app.last_speed_test {
+            stats_lines.push(Line::from(""));
+            stats_lines.push(Line::from(vec![Span::styled(" Last Speed Test:", Style::default().fg(Color::DarkGray))]));
+            stats_lines.push(Line::from(vec![
+                Span::styled(" Down: ", Style::default().fg(Color::LightCyan)),
+                Span::styled(format!("{:.1} Mbps", down), Style::default().fg(Color::LightCyan)),
+            ]));
+            stats_lines.push(Line::from(vec![
+                Span::styled(" Up:   ", Style::default().fg(Color::LightMagenta)),
+                Span::styled(format!("{:.1} Mbps", up), Style::default().fg(Color::LightMagenta)),
+            ]));
         }
 
         let stats_block = Paragraph::new(Text::from(stats_lines)).block(
@@ -115,7 +128,8 @@ impl AppWidget for LatencyDashboardWidget {
         ];
 
         let x_bounds = [start_seq as f64, app.latest_sequence as f64];
-        let y_bounds = [0.0, app.max_ping * 1.1];
+        let max_val = app.chart_max_ping;
+        let y_bounds = [0.0, max_val * 1.1];
 
         let chart = Chart::new(datasets)
             .block(
@@ -132,8 +146,8 @@ impl AppWidget for LatencyDashboardWidget {
                     .bounds(y_bounds)
                     .labels(vec![
                         Span::raw("0"),
-                        Span::raw(format!("{:.0}", app.max_ping / 2.0)),
-                        Span::raw(format!("{:.0}", app.max_ping)),
+                        Span::raw(format!("{:.0}", max_val / 2.0)),
+                        Span::raw(format!("{:.0}", max_val)),
                     ]),
             )
             .legend_position(Some(LegendPosition::TopLeft));

@@ -52,7 +52,7 @@ impl CoreEngine {
 
         let icmp_identifier = (SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::default())
+            .unwrap_or_default()
             .subsec_nanos() % 65535) as u16;
 
         tokio::spawn(async move {

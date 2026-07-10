@@ -3,6 +3,7 @@ pub mod engine;
 pub mod network;
 pub mod ui;
 pub mod probe;
+pub mod utils;
 
 use clap::Parser;
 use engine::CoreEngine;

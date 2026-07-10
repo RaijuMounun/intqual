@@ -28,6 +28,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 anyhow = "1.0.103"
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
+async-stream = "0.3.6"
+bytes = "1.12.1"
 
 [profile.release]
 opt-level = 3    

@@ -29,62 +29,85 @@ impl NetworkProbe for TracerouteProbe {
                 break;
             }
 
-            let seq = ttl as u16; 
-            let target_addr = self.resolved_addr;
-            let timeout_duration = self.timeout;
-            let identifier = self.icmp_identifier;
-            let ttl_u32 = ttl as u32;
+            let mut rtt_sum = 0.0;
+            let mut rtt_count = 0;
+            let mut last_responder = None;
+            let mut is_dest_reached = false;
+            let mut fatal_error = None;
+            
+            for probe_idx in 0..3 {
+                let seq = (ttl as u16) * 3 + probe_idx; 
+                let target_addr = self.resolved_addr;
+                let timeout_duration = self.timeout;
+                let identifier = self.icmp_identifier;
+                let ttl_u32 = ttl as u32;
 
-            let hop_result = match tokio::task::spawn_blocking(move || {
-                tracing::debug!("Sending probe TTL={}, Seq={}, ID={}", ttl_u32, seq, identifier);
-                let provider = TracerouteIcmpProvider::new(identifier);
-                provider.send_with_ttl(&target_addr, seq, ttl_u32, timeout_duration)
-            }).await {
-                Ok(res) => res,
-                Err(e) => return Err(ProbeError::Socket(std::io::Error::new(std::io::ErrorKind::Other, format!("Thread Panicked: {}", e)))),
+                let hop_result = match tokio::task::spawn_blocking(move || {
+                    tracing::debug!("Sending probe TTL={}, Seq={}, ID={}", ttl_u32, seq, identifier);
+                    let provider = TracerouteIcmpProvider::new(identifier);
+                    provider.send_with_ttl(&target_addr, seq, ttl_u32, timeout_duration)
+                }).await {
+                    Ok(res) => res,
+                    Err(e) => return Err(ProbeError::Socket(std::io::Error::other(format!("Thread Panicked: {}", e)))),
+                };
+
+                match hop_result {
+                    Ok(result) => {
+                        tracing::debug!("Received response for TTL={}: {:?}", ttl, result.response);
+                        let is_dest = match result.response {
+                            IcmpResponse::EchoReply(_) => true,
+                            IcmpResponse::TimeExceeded(_) => false,
+                            IcmpResponse::DestinationUnreachable(_) => true,
+                            IcmpResponse::Unknown { .. } => false,
+                        };
+                        
+                        rtt_sum += result.rtt_ms;
+                        rtt_count += 1;
+                        last_responder = Some(result.responder_ip.to_string());
+                        
+                        if is_dest {
+                            is_dest_reached = true;
+                        }
+                    }
+                    Err(ProbeError::IcmpTimeout) => {
+                        tracing::warn!("Timeout/Error for TTL={}, Probe={}: {}", ttl, probe_idx, ProbeError::IcmpTimeout);
+                    }
+                    Err(e) => {
+                        tracing::error!("Fatal Error for TTL={}: {}", ttl, e);
+                        fatal_error = Some(e);
+                        break;
+                    }
+                }
+                
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            
+            if let Some(err) = fatal_error {
+                return Err(err);
+            }
+            
+            let hop = if rtt_count > 0 {
+                TracerouteHop {
+                    hop_number: ttl,
+                    ip_address: last_responder,
+                    avg_rtt_ms: Some(rtt_sum / rtt_count as f64),
+                    is_destination: is_dest_reached,
+                }
+            } else {
+                TracerouteHop {
+                    hop_number: ttl,
+                    ip_address: None,
+                    avg_rtt_ms: None,
+                    is_destination: false,
+                }
             };
+            
+            if tx.try_send(TelemetryEvent::TracerouteHop(hop)).is_err() {
+                break;
+            }
 
-            match hop_result {
-                Ok(result) => {
-                    tracing::debug!("Received response for TTL={}: {:?}", ttl, result.response);
-                    let is_dest = match result.response {
-                        IcmpResponse::EchoReply(_) => true,
-                        IcmpResponse::TimeExceeded(_) => false,
-                        IcmpResponse::DestinationUnreachable(_) => true,
-                        IcmpResponse::Unknown { .. } => false,
-                    };
-
-                    let hop = TracerouteHop {
-                        hop_number: ttl,
-                        ip_address: Some(result.responder_ip.to_string()),
-                        rtt_ms: Some(result.rtt_ms),
-                        is_destination: is_dest,
-                    };
-
-                    if tx.try_send(TelemetryEvent::TracerouteHop(hop)).is_err() {
-                        break;
-                    }
-
-                    if is_dest {
-                        break;
-                    }
-                }
-                Err(ProbeError::IcmpTimeout) => {
-                    tracing::warn!("Timeout/Error for TTL={}: {}", ttl, ProbeError::IcmpTimeout);
-                    let hop = TracerouteHop {
-                        hop_number: ttl,
-                        ip_address: None,
-                        rtt_ms: None,
-                        is_destination: false,
-                    };
-                    if tx.try_send(TelemetryEvent::TracerouteHop(hop)).is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Fatal Error for TTL={}: {}", ttl, e);
-                    return Err(e);
-                }
+            if is_dest_reached {
+                break;
             }
         }
 

@@ -17,8 +17,8 @@ impl AppWidget for TracerouteWidget {
             let hop_num = hop.hop_number.to_string();
             
             let (ip_str, rtt_str, style) = if let Some(ip) = &hop.ip_address {
-                let rtt = if let Some(rtt_ms) = hop.rtt_ms {
-                    format!("{:.1} ms", rtt_ms)
+                let rtt = if let Some(avg_rtt_ms) = hop.avg_rtt_ms {
+                    format!("{:.1} ms", avg_rtt_ms)
                 } else {
                     "*".to_string()
                 };

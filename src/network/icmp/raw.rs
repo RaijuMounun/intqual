@@ -1,5 +1,3 @@
-#[cfg(target_os = "windows")]
-
 use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -11,17 +9,17 @@ use super::packet::{IcmpEchoRequest, IcmpEchoReply, IcmpResponse};
 
 use crate::models::ProbeError;
 
-pub struct WindowsRawIcmp {
+pub struct RawIcmpProvider {
     identifier: u16,
 }
 
-impl WindowsRawIcmp {
+impl RawIcmpProvider {
     pub fn new(identifier: u16) -> Self {
         Self { identifier }
     }
 }
 
-impl IcmpProvider for WindowsRawIcmp {
+impl IcmpProvider for RawIcmpProvider {
     fn ping(&self, target: &SocketAddr, seq: u16, timeout: Duration) -> Result<f64, ProbeError> {
         let icmp_start = Instant::now();
         
@@ -55,10 +53,9 @@ impl IcmpProvider for WindowsRawIcmp {
 
                     let icmp_buf = IcmpResponse::strip_ipv4_header(initialized_buf);
 
-                    if let Ok(reply) = IcmpEchoReply::decode(icmp_buf) {
-                        if reply.sequence_number == seq {
+                    if let Ok(reply) = IcmpEchoReply::decode(icmp_buf)
+                        && reply.sequence_number == seq {
                             return Ok(icmp_start.elapsed().as_secs_f64() * 1000.0);
-                        }
                     }
 
                     if icmp_start.elapsed() > timeout {

@@ -78,7 +78,7 @@ impl IcmpEchoRequest {
         }
 
         // If the payload length is odd, pad the last byte with zero
-        if buffer.len() % 2 != 0 {
+        if !buffer.len().is_multiple_of(2) {
             let word = (buffer[buffer.len() - 1] as u32) << 8;
             sum += word;
         }

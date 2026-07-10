@@ -34,14 +34,18 @@ impl AppWidget for BandwidthWidget {
                 Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
             )]));
             stats_lines.push(Line::from(""));
+        } else if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Failed(_))) {
+            stats_lines.push(Line::from(vec![Span::styled(
+                "[TEST FAILED]",
+                Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+            )]));
+            stats_lines.push(Line::from(""));
         }
 
-        let latest_idx = (app.latest_sequence % 100 as u64) as usize;
-        let (loss_pct, jitter) = app.calculate_stats();
+        let loss_pct = app.icmp_stats.loss_pct;
+        let jitter = app.icmp_stats.avg_jitter;
 
-        if app.latest_sequence == 0 {
-            stats_lines.push(Line::from("  Waiting for data..."));
-        } else if let Some(ref metric) = app.history[latest_idx] {
+        if let Some(ref metric) = app.latest_metric {
             let mut perm_denied = false;
             let (icmp_str, icmp_color_override) = match &metric.icmp_ping {
                 Ok(ms) => (format!("{:.1} ms", ms), None),
@@ -88,6 +92,8 @@ impl AppWidget for BandwidthWidget {
             stats_lines.push(Line::from(vec![Span::styled(format!(" {:.1}%", loss_pct), loss_style)]));
             stats_lines.push(Line::from(""));
             stats_lines.push(Line::from(vec![Span::styled(format!(" Seq ID: {}", metric.sequence_number), Style::default().fg(Color::DarkGray))]));
+        } else {
+            stats_lines.push(Line::from("  Waiting for data..."));
         }
 
         if let Some((down, up)) = app.last_speed_test {
@@ -131,12 +137,41 @@ impl AppWidget for BandwidthWidget {
                         true,
                     );
                 }
+                BandwidthProgress::Failed(msg) => {
+                    let layout = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Percentage(30), Constraint::Length(5), Constraint::Percentage(30)])
+                        .split(main_layout[1]);
+                        
+                    let error_text = format!("\n{}\n", msg);
+                    let err_p = Paragraph::new(error_text)
+                        .block(Block::default().title(" Bandwidth Test Failed ").borders(Borders::ALL).border_style(Style::default().fg(Color::Red)))
+                        .style(Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD))
+                        .alignment(Alignment::Center)
+                        .wrap(ratatui::widgets::Wrap { trim: true });
+                        
+                    frame.render_widget(err_p, layout[1]);
+                    
+                    let help_msg = Paragraph::new(Text::from(vec![Line::from(vec![Span::styled(
+                        "Press [Enter] to return to Ping View.",
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    )])]))
+                    .alignment(Alignment::Center);
+                    
+                    let help_layout = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(2), Constraint::Length(1)])
+                        .split(layout[2]);
+                        
+                    frame.render_widget(help_msg, help_layout[1]);
+                }
             }
         }
     }
 }
 
 impl BandwidthWidget {
+    #[allow(clippy::too_many_arguments)]
     fn render_bandwidth_panel(
         &self,
         frame: &mut Frame,
@@ -211,7 +246,7 @@ impl BandwidthWidget {
             let gauge = Gauge::default()
                 .block(Block::default().borders(Borders::ALL).title(format!(" {} Progress ", phase)))
                 .gauge_style(Style::default().fg(Color::LightCyan).bg(Color::DarkGray))
-                .percent(progress.min(100.0).max(0.0) as u16);
+                .percent(progress.clamp(0.0, 100.0) as u16);
             frame.render_widget(gauge, bottom_layout[1]);
         }
     }

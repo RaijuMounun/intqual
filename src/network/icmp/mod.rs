@@ -1,11 +1,9 @@
 pub mod packet;
 pub mod provider;
+pub mod raw;
 
 #[cfg(unix)]
 pub mod unix;
-
-#[cfg(target_os = "windows")]
-pub mod windows;
 
 pub use provider::IcmpProvider;
 pub use packet::{IcmpEchoRequest, IcmpEchoReply};
@@ -14,10 +12,10 @@ pub use packet::{IcmpEchoRequest, IcmpEchoReply};
 pub type DefaultIcmpProvider = unix::UnixDgramIcmp;
 
 #[cfg(unix)]
-pub type TracerouteIcmpProvider = unix::UnixRawIcmp;
+pub type TracerouteIcmpProvider = raw::RawIcmpProvider;
 
 #[cfg(target_os = "windows")]
-pub type DefaultIcmpProvider = windows::WindowsRawIcmp;
+pub type DefaultIcmpProvider = raw::RawIcmpProvider;
 
 #[cfg(target_os = "windows")]
-pub type TracerouteIcmpProvider = windows::WindowsRawIcmp;
+pub type TracerouteIcmpProvider = raw::RawIcmpProvider;

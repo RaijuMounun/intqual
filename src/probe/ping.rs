@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use crate::models::ProbeError;
@@ -47,13 +47,10 @@ impl NetworkProbe for PingProbe {
                         provider.ping(&target_addr, icmp_seq, timeout_duration)
                     }).await {
                         Ok(res) => res,
-                        Err(e) => return Err(ProbeError::Socket(std::io::Error::new(std::io::ErrorKind::Other, format!("Thread Panicked: {}", e)))),
+                        Err(e) => return Err(ProbeError::Socket(std::io::Error::other(format!("Thread Panicked: {}", e)))),
                     };
 
-                    let timestamp = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or(Duration::from_secs(0))
-                        .as_secs();
+                    let timestamp = crate::utils::current_timestamp();
 
                     let event = TelemetryEvent::Ping {
                         sequence_number: current_seq,
