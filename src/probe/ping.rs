@@ -47,7 +47,7 @@ impl NetworkProbe for PingProbe {
                         provider.ping(&target_addr, icmp_seq, timeout_duration).await
                     };
 
-                    let timestamp = crate::utils::current_timestamp();
+                    let timestamp = crate::utils::current_timestamp()?;
 
                     let event = TelemetryEvent::Ping {
                         sequence_number: current_seq,
@@ -56,7 +56,16 @@ impl NetworkProbe for PingProbe {
                         timestamp,
                     };
 
-                    let _ = tx.try_send(event);
+                    if let Err(e) = tx.try_send(event) {
+                        match e {
+                            tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                                // UI overloaded, intentionally dropping telemetry frame to prevent memory exhaustion
+                            }
+                            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                                return Ok(());
+                            }
+                        }
+                    }
                 }
             }
         }

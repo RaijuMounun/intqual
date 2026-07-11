@@ -48,15 +48,29 @@ impl super::NetworkEngine for CoreEngine {
             },
             Err(e) => {
                 tracing::error!("Fatal Error: DNS Resolution Failed: {}", e);
-                let _ = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::DnsResolution(e.to_string())));
+                if let Err(send_err) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::DnsResolution(e.to_string()))) {
+                    match send_err {
+                        tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                            // UI overloaded, intentionally dropping telemetry frame to prevent memory exhaustion
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                            return;
+                        }
+                    }
+                }
                 return;
             }
         };
 
-        let icmp_identifier = (SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() % 65535) as u16;
+        let icmp_identifier = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => (d.subsec_nanos() % 65535) as u16,
+            Err(_) => {
+                if tx.send(TelemetryEvent::Fatal(ProbeError::TimeSyncError)).await.is_err() {
+                    return;
+                }
+                return;
+            }
+        };
 
         tokio::spawn(async move {
             let token = CancellationToken::new();
@@ -106,9 +120,16 @@ impl super::NetworkEngine for CoreEngine {
                                 token
                             ).await;
 
-                            if let Err(e) = result {
-                                let _ = tx_for_bw.try_send(TelemetryEvent::BandwidthError(e));
-                            }
+                            if let Err(e) = result
+                                && let Err(send_err) = tx_for_bw.try_send(TelemetryEvent::BandwidthError(e)) {
+                                    match send_err {
+                                        tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                                            // UI overloaded, intentionally dropping telemetry frame to prevent memory exhaustion
+                                        }
+                                        tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                                        }
+                                    }
+                                }
                         });
                     },
                     EngineCommand::StartTraceroute(target) => {
@@ -130,10 +151,10 @@ impl super::NetworkEngine for CoreEngine {
                                 identifier
                             );
                             
-                            // NetworkProbe trait 'run' requires mut self
                             if let Err(e) = crate::probe::NetworkProbe::run(&mut probe, tx_traceroute.clone(), token).await {
                                 tracing::error!("Traceroute probe encountered fatal error: {:?}", e);
-                                let _ = tx_traceroute.send(TelemetryEvent::Fatal(e)).await;
+                                if tx_traceroute.send(TelemetryEvent::Fatal(e)).await.is_err() {
+                                }
                             }
                         });
                     }
@@ -162,7 +183,8 @@ impl CoreEngine {
         tokio::spawn(async move {
             if let Err(e) = ping_probe.run(tx_ping.clone(), token_ping).await {
                 tracing::error!("Ping probe encountered fatal error: {:?}", e);
-                let _ = tx_ping.send(TelemetryEvent::Fatal(e)).await;
+                if tx_ping.send(TelemetryEvent::Fatal(e)).await.is_err() {
+                }
             }
         });
 
@@ -171,7 +193,8 @@ impl CoreEngine {
         tokio::spawn(async move {
             if let Err(e) = tcp_probe.run(tx_tcp.clone(), token_tcp).await {
                 tracing::error!("TCP probe encountered fatal error: {:?}", e);
-                let _ = tx_tcp.send(TelemetryEvent::Fatal(e)).await;
+                if tx_tcp.send(TelemetryEvent::Fatal(e)).await.is_err() {
+                }
             }
         });
     }

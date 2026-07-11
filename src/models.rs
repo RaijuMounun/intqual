@@ -14,6 +14,10 @@ pub enum ProbeError {
     BandwidthTestFailed(String),
     #[error("Rate Limit Exceeded (Ban): {0}")]
     RateLimited(String),
+    #[error("Time Synchronization Error")]
+    TimeSyncError,
+    #[error("Thread Panic: {0}")]
+    ThreadPanic(String),
 }
 
 /// The canonical data contract between the Network Engine (Producer) and the UI (Consumer).

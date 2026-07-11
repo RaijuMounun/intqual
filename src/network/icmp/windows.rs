@@ -27,7 +27,8 @@ impl IcmpProvider for RawIcmpProvider {
         
         let socket = match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
             Ok(s) => s,
-            Err(_) => return Err(ProbeError::PermissionDenied),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(ProbeError::PermissionDenied),
+            Err(e) => return Err(ProbeError::Socket(e)),
         };
 
         let packet = IcmpEchoRequest::new(self.identifier, seq, vec![]);
@@ -52,7 +53,7 @@ impl IcmpProvider for RawIcmpProvider {
                                 return Ok(icmp_start.elapsed().as_secs_f64() * 1000.0);
                         }
                     },
-                    Err(_) => return Err(ProbeError::IcmpTimeout),
+                    Err(e) => return Err(ProbeError::Socket(e)),
                 }
             }
         }));
@@ -60,7 +61,7 @@ impl IcmpProvider for RawIcmpProvider {
         match timeout_future.await {
             Ok(Ok(Ok(res))) => Ok(res),
             Ok(Ok(Err(e))) => Err(e),
-            Ok(Err(e)) => Err(ProbeError::Socket(std::io::Error::other(format!("Thread Panicked: {}", e)))),
+            Ok(Err(e)) => Err(ProbeError::ThreadPanic(format!("Thread Panicked: {}", e))),
             Err(_) => Err(ProbeError::IcmpTimeout),
         }
     }
@@ -70,7 +71,8 @@ impl IcmpProvider for RawIcmpProvider {
         
         let socket = match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
             Ok(s) => s,
-            Err(_) => return Err(ProbeError::PermissionDenied),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(ProbeError::PermissionDenied),
+            Err(e) => return Err(ProbeError::Socket(e)),
         };
 
         if let Err(e) = socket.set_ttl_v4(ttl) {
@@ -127,7 +129,7 @@ impl IcmpProvider for RawIcmpProvider {
                             }
                         }
                     },
-                    Err(_) => return Err(ProbeError::IcmpTimeout),
+                    Err(e) => return Err(ProbeError::Socket(e)),
                 }
             }
         }));
@@ -135,7 +137,7 @@ impl IcmpProvider for RawIcmpProvider {
         match timeout_future.await {
             Ok(Ok(Ok(res))) => Ok(res),
             Ok(Ok(Err(e))) => Err(e),
-            Ok(Err(e)) => Err(ProbeError::Socket(std::io::Error::other(format!("Thread Panicked: {}", e)))),
+            Ok(Err(e)) => Err(ProbeError::ThreadPanic(format!("Thread Panicked: {}", e))),
             Err(_) => Err(ProbeError::IcmpTimeout),
         }
     }

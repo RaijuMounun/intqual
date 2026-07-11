@@ -27,7 +27,8 @@ impl IcmpProvider for RawIcmpProvider {
         
         let socket = match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
             Ok(s) => s,
-            Err(_) => return Err(ProbeError::PermissionDenied),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(ProbeError::PermissionDenied),
+            Err(e) => return Err(ProbeError::Socket(e)),
         };
 
         if let Err(e) = socket.set_nonblocking(true) {
@@ -87,7 +88,8 @@ impl IcmpProvider for RawIcmpProvider {
         
         let socket = match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
             Ok(s) => s,
-            Err(_) => return Err(ProbeError::PermissionDenied),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(ProbeError::PermissionDenied),
+            Err(e) => return Err(ProbeError::Socket(e)),
         };
 
         if let Err(e) = socket.set_ttl_v4(ttl) {

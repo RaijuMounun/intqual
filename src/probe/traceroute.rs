@@ -99,8 +99,15 @@ impl NetworkProbe for TracerouteProbe {
                 }
             };
             
-            if tx.try_send(TelemetryEvent::TracerouteHop(hop)).is_err() {
-                break;
+            if let Err(e) = tx.try_send(TelemetryEvent::TracerouteHop(hop)) {
+                match e {
+                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                        // UI overloaded, intentionally dropping telemetry frame to prevent memory exhaustion
+                    }
+                    tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                        return Ok(());
+                    }
+                }
             }
 
             if is_dest_reached {
@@ -108,7 +115,16 @@ impl NetworkProbe for TracerouteProbe {
             }
         }
 
-        let _ = tx.try_send(TelemetryEvent::TracerouteComplete);
+        if let Err(e) = tx.try_send(TelemetryEvent::TracerouteComplete) {
+            match e {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    // UI overloaded, intentionally dropping telemetry frame to prevent memory exhaustion
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    return Ok(());
+                }
+            }
+        }
         Ok(())
     }
 }

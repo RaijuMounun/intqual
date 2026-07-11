@@ -59,13 +59,23 @@ impl BandwidthEngine {
                                 // Otherwise, if it's the very first request, report the error.
                                 if bytes_counter.load(Ordering::Relaxed) == 0 {
                                     if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                                        let _ = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
+                                        if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
                                             "Cloudflare Rate Limit (Ban) Exceeded. Please wait ~1 hour before testing again.".to_string()
-                                        )));
+                                        ))) {
+                                            match e {
+                                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                                tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
+                                            }
+                                        }
                                     } else {
-                                        let _ = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
+                                        if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
                                             format!("HTTP Error: {}", res.status())
-                                        )));
+                                        ))) {
+                                            match e {
+                                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                                tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
+                                            }
+                                        }
                                     }
                                     token.cancel();
                                 }
@@ -86,16 +96,30 @@ impl BandwidthEngine {
                                             Ok(None) => {
                                                 break; // EOF, loop will reconnect to download again
                                             }
-                                            Err(_) => {
-                                                break;
+                                            Err(e) => {
+                                                if let Err(send_err) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))) {
+                                                    match send_err {
+                                                        tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                                        tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
+                                                    }
+                                                }
+                                                token.cancel();
+                                                return;
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                        Err(_) => {
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        Err(e) => {
+                            if let Err(send_err) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))) {
+                                match send_err {
+                                    tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                    tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
+                                }
+                            }
+                            token.cancel();
+                            return;
                         }
                     }
                 }
@@ -133,7 +157,12 @@ impl BandwidthEngine {
                             current_mbps: speed_mbps,
                             progress_pct: progress,
                         });
-                        let _ = tx.try_send(event);
+                        if let Err(e) = tx.try_send(event) {
+                            match e {
+                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                tokio::sync::mpsc::error::TrySendError::Closed(_) => break,
+                            }
+                        }
                     }
                 }
             }
@@ -141,7 +170,9 @@ impl BandwidthEngine {
 
         // Wait for download workers to exit gracefully
         for w in workers {
-            let _ = w.await;
+            if let Err(e) = w.await {
+                return Err(ProbeError::ThreadPanic(e.to_string()));
+            }
         }
 
         let elapsed = start_time.elapsed().as_secs_f64();
@@ -214,13 +245,23 @@ impl BandwidthEngine {
                             if let Ok(response) = res && !response.status().is_success() {
                                 if bytes_counter.load(Ordering::Relaxed) == 0 {
                                     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                                        let _ = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
+                                        if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
                                             "Cloudflare Rate Limit (Ban) Exceeded during upload.".to_string()
-                                        )));
+                                        ))) {
+                                            match e {
+                                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                                tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
+                                            }
+                                        }
                                     } else {
-                                        let _ = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
+                                        if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
                                             format!("HTTP Upload Error: {}", response.status())
-                                        )));
+                                        ))) {
+                                            match e {
+                                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                                tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
+                                            }
+                                        }
                                     }
                                     token.cancel();
                                 }
@@ -274,14 +315,21 @@ impl BandwidthEngine {
                             current_mbps: speed_mbps,
                             progress_pct: progress,
                         });
-                        let _ = tx.try_send(event);
+                        if let Err(e) = tx.try_send(event) {
+                            match e {
+                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                tokio::sync::mpsc::error::TrySendError::Closed(_) => break,
+                            }
+                        }
                     }
                 }
             }
         }
 
         for w in up_workers {
-            let _ = w.await;
+            if let Err(e) = w.await {
+                return Err(ProbeError::ThreadPanic(e.to_string()));
+            }
         }
 
         let up_elapsed = up_start_time.elapsed().as_secs_f64();
@@ -296,7 +344,12 @@ impl BandwidthEngine {
             download_mbps: final_down_mbps,
             upload_mbps: final_up_mbps,
         });
-        let _ = tx.try_send(final_event);
+        if let Err(e) = tx.try_send(final_event) {
+            match e {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => return Ok(()),
+            }
+        }
 
         Ok(())
     }

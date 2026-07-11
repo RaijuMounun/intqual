@@ -323,12 +323,18 @@ pub fn run_app(
             match event::read()? {
                 Event::Key(key) => {
                     if key.code == KeyCode::Char('q') {
-                        let _ = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Stop);
+                        if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Stop)
+                            && matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
+                                break;
+                            }
                         break;
                     } else if key.code == KeyCode::Char('s') {
                         if !matches!(app.mode, AppMode::BandwidthTesting(_)) {
                             app.last_error = None;
                             if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::StartBandwidthTest) {
+                                if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
+                                    break;
+                                }
                                 tracing::error!("Failed to send EngineCommand: {}", e);
                             }
                         }
@@ -340,6 +346,9 @@ pub fn run_app(
                             app.last_error = None;
                             app.active_widget = ActiveWidget::Traceroute;
                             if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::StartTraceroute(app.current_target_ip.clone())) {
+                                if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
+                                    break;
+                                }
                                 tracing::error!("Failed to send EngineCommand: {}", e);
                             }
                         }
@@ -350,6 +359,9 @@ pub fn run_app(
                             app.active_widget = ActiveWidget::Latency;
                             app.last_error = None;
                             if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
+                                if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
+                                    break;
+                                }
                                 tracing::error!("Failed to send EngineCommand: {}", e);
                             }
                         }
@@ -360,6 +372,9 @@ pub fn run_app(
                             app.active_widget = ActiveWidget::Latency;
                             app.last_error = None;
                             if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
+                                if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
+                                    break;
+                                }
                                 tracing::error!("Failed to send EngineCommand: {}", e);
                             }
                     }
