@@ -6,12 +6,11 @@ use ratatui::{
 };
 use crate::models::ProbeError;
 use crate::ui::AppState;
-use super::AppWidget;
 
 pub struct LatencyDashboardWidget;
 
-impl AppWidget for LatencyDashboardWidget {
-    fn render(&self, frame: &mut Frame, area: Rect, app: &AppState) {
+impl LatencyDashboardWidget {
+    pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
         let main_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
@@ -118,13 +117,13 @@ impl AppWidget for LatencyDashboardWidget {
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(Style::default().fg(Color::DarkGray))
-                .data(&app.tcp_data),
+                .data(app.tcp_data.as_slices().0),
             Dataset::default()
                 .name("ICMP (Ping)")
                 .marker(symbols::Marker::Braille)
                 .graph_type(GraphType::Line)
                 .style(Style::default().fg(Color::LightCyan))
-                .data(&app.icmp_data),
+                .data(app.icmp_data.as_slices().0),
         ];
 
         let x_bounds = [start_seq as f64, app.latest_sequence as f64];
@@ -167,7 +166,7 @@ impl AppWidget for LatencyDashboardWidget {
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray)),
             )
-            .data(&app.jitter_history)
+            .data(app.jitter_history.as_slices().0)
             .style(Style::default().fg(jitter_color));
 
         frame.render_widget(jitter_sparkline, right_layout[1]);

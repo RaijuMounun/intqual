@@ -6,12 +6,11 @@ use ratatui::{
 use tui_big_text::{BigText, PixelSize};
 use crate::models::{BandwidthProgress, ProbeError};
 use crate::ui::{AppMode, AppState};
-use super::AppWidget;
 
 pub struct BandwidthWidget;
 
-impl AppWidget for BandwidthWidget {
-    fn render(&self, frame: &mut Frame, area: Rect, app: &AppState) {
+impl BandwidthWidget {
+    pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
         let main_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
@@ -121,13 +120,13 @@ impl AppWidget for BandwidthWidget {
         if let AppMode::BandwidthTesting(ref progress) = app.mode {
             match progress {
                 BandwidthProgress::Downloading { current_mbps, progress_pct } => {
-                    self.render_bandwidth_panel(frame, main_layout[1], "Download", *current_mbps, 0.0, *progress_pct, false);
+                    Self::render_bandwidth_panel(frame, main_layout[1], "Download", *current_mbps, 0.0, *progress_pct, false);
                 }
                 BandwidthProgress::Uploading { download_result_mbps, current_mbps, progress_pct } => {
-                    self.render_bandwidth_panel(frame, main_layout[1], "Upload", *download_result_mbps, *current_mbps, *progress_pct, false);
+                    Self::render_bandwidth_panel(frame, main_layout[1], "Upload", *download_result_mbps, *current_mbps, *progress_pct, false);
                 }
                 BandwidthProgress::Finished { download_mbps, upload_mbps } => {
-                    self.render_bandwidth_panel(
+                    Self::render_bandwidth_panel(
                         frame,
                         main_layout[1],
                         "Finished",
@@ -168,12 +167,9 @@ impl AppWidget for BandwidthWidget {
             }
         }
     }
-}
 
-impl BandwidthWidget {
     #[allow(clippy::too_many_arguments)]
     fn render_bandwidth_panel(
-        &self,
         frame: &mut Frame,
         area: Rect,
         phase: &'static str,

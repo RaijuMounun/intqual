@@ -16,7 +16,8 @@ use ratatui::{
 use std::io::{Result, stdout};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use widgets::AppWidget;
+use std::collections::VecDeque;
+use widgets::ActiveWidget;
 
 const HISTORY_SIZE: usize = 100;
 
@@ -89,15 +90,15 @@ pub struct AppState {
     // Push-based stats and chart data
     pub icmp_stats: NetworkStats,
     pub tcp_stats: NetworkStats,
-    pub icmp_data: Vec<(f64, f64)>,
-    pub tcp_data: Vec<(f64, f64)>,
-    pub jitter_history: Vec<u64>,
+    pub icmp_data: VecDeque<(f64, f64)>,
+    pub tcp_data: VecDeque<(f64, f64)>,
+    pub jitter_history: VecDeque<u64>,
     pub chart_max_ping: f64,
     
     // For single-frame display
     pub latest_metric: Option<PingMetrics>,
     
-    pub active_widgets: Vec<Box<dyn AppWidget>>,
+    pub active_widget: ActiveWidget,
     pub traceroute_hops: Vec<crate::models::TracerouteHop>,
     pub traceroute_complete: bool,
     pub current_target_ip: String,
@@ -118,12 +119,12 @@ impl AppState {
             last_error: None,
             icmp_stats: NetworkStats::default(),
             tcp_stats: NetworkStats::default(),
-            icmp_data: Vec::with_capacity(HISTORY_SIZE + 1),
-            tcp_data: Vec::with_capacity(HISTORY_SIZE + 1),
-            jitter_history: Vec::with_capacity(HISTORY_SIZE + 1),
+            icmp_data: VecDeque::with_capacity(HISTORY_SIZE * 2),
+            tcp_data: VecDeque::with_capacity(HISTORY_SIZE * 2),
+            jitter_history: VecDeque::with_capacity(HISTORY_SIZE * 2),
             chart_max_ping: 50.0,
             latest_metric: None,
-            active_widgets: vec![Box::new(widgets::latency::LatencyDashboardWidget)],
+            active_widget: ActiveWidget::Latency,
             traceroute_hops: Vec::new(),
             traceroute_complete: false,
             current_target_ip: String::new(),
@@ -141,11 +142,12 @@ impl AppState {
         self.latest_metric = None;
     }
 
-    fn push_chart_data<T>(vec: &mut Vec<T>, item: T) {
-        vec.push(item);
+    fn push_chart_data<T>(vec: &mut VecDeque<T>, item: T) {
+        vec.push_back(item);
         if vec.len() > HISTORY_SIZE {
-            vec.remove(0);
+            vec.pop_front();
         }
+        vec.make_contiguous();
     }
 
     fn update_chart_max_ping(&mut self) {
@@ -255,7 +257,7 @@ impl AppState {
                     self.last_speed_test = Some((*download_mbps, *upload_mbps));
                 }
                 self.mode = AppMode::BandwidthTesting(progress);
-                self.active_widgets = vec![Box::new(crate::ui::widgets::bandwidth::BandwidthWidget)];
+                self.active_widget = ActiveWidget::Bandwidth;
                 RenderAction::Redraw
             }
             TelemetryEvent::BandwidthError(err) => {
@@ -268,7 +270,7 @@ impl AppState {
             }
             TelemetryEvent::Fatal(err) => {
                 self.mode = AppMode::Error(err.to_string());
-                self.active_widgets = vec![Box::new(crate::ui::widgets::error::ErrorWidget)];
+                self.active_widget = ActiveWidget::Error;
                 self.last_error = Some(format!("FATAL ERROR: {}", err));
                 RenderAction::Redraw
             }
@@ -292,7 +294,6 @@ impl AppState {
 pub fn run_app(
     mut rx: mpsc::Receiver<TelemetryEvent>,
     cmd_tx: mpsc::Sender<EngineCommand>,
-    _tx: mpsc::Sender<TelemetryEvent>,
 ) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -337,7 +338,7 @@ pub fn run_app(
                             app.traceroute_hops.clear();
                             app.traceroute_complete = false;
                             app.last_error = None;
-                            app.active_widgets = vec![Box::new(crate::ui::widgets::traceroute::TracerouteWidget)];
+                            app.active_widget = ActiveWidget::Traceroute;
                             if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::StartTraceroute(app.current_target_ip.clone())) {
                                 tracing::error!("Failed to send EngineCommand: {}", e);
                             }
@@ -346,7 +347,7 @@ pub fn run_app(
                         if matches!(app.mode, AppMode::BandwidthTesting(_) | AppMode::Traceroute | AppMode::Error(_)) {
                             app.reset_ping_state();
                             app.mode = AppMode::Ping;
-                            app.active_widgets = vec![Box::new(crate::ui::widgets::latency::LatencyDashboardWidget)];
+                            app.active_widget = ActiveWidget::Latency;
                             app.last_error = None;
                             if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
                                 tracing::error!("Failed to send EngineCommand: {}", e);
@@ -356,7 +357,7 @@ pub fn run_app(
                         && matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..}) | AppMode::BandwidthTesting(BandwidthProgress::Failed(_)) | AppMode::Traceroute | AppMode::Error(_)) {
                             app.reset_ping_state();
                             app.mode = AppMode::Ping;
-                            app.active_widgets = vec![Box::new(crate::ui::widgets::latency::LatencyDashboardWidget)];
+                            app.active_widget = ActiveWidget::Latency;
                             app.last_error = None;
                             if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
                                 tracing::error!("Failed to send EngineCommand: {}", e);
@@ -412,7 +413,5 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
 
     frame.render_widget(top_bar, screen_layout[0]);
 
-    for widget in &app.active_widgets {
-        widget.render(frame, screen_layout[1], app);
-    }
+    app.active_widget.render(frame, screen_layout[1], app);
 }

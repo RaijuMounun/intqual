@@ -4,13 +4,13 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
-use crate::ui::{AppState, AppMode, widgets::AppWidget};
+use crate::ui::{AppState, AppMode};
 
 #[derive(Default)]
 pub struct ErrorWidget;
 
-impl AppWidget for ErrorWidget {
-    fn render(&self, frame: &mut Frame, area: Rect, app: &AppState) {
+impl ErrorWidget {
+    pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
         let error_msg = match &app.mode {
             AppMode::Error(msg) => msg.clone(),
             _ => "Bilinmeyen Hata".to_string(),

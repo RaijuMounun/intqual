@@ -4,13 +4,13 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Row, Table},
     Frame,
 };
-use crate::ui::{AppState, widgets::AppWidget};
+use crate::ui::AppState;
 
 #[derive(Default)]
 pub struct TracerouteWidget;
 
-impl AppWidget for TracerouteWidget {
-    fn render(&self, frame: &mut Frame, area: Rect, app: &AppState) {
+impl TracerouteWidget {
+    pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
         let mut rows = Vec::new();
 
         for hop in &app.traceroute_hops {

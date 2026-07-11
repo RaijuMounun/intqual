@@ -78,12 +78,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Ignite the async engine in the background (Fire and Forget).
     // The engine will spawn its own detached micro-tasks and asynchronously push data into `tx`.
-    engine.start(tx.clone(), cmd_rx).await;
+    engine.start(tx, cmd_rx).await;
 
     // 5. Transfer control of the main OS thread to the UI event loop.
     // WHY: Terminal rendering (crossterm) is inherently synchronous and blocking. 
     // Running it on the main thread ensures stable rendering while Tokio handles I/O in the background.
-    ui::run_app(rx, cmd_tx, tx.clone())?;
+    ui::run_app(rx, cmd_tx)?;
 
     Ok(())
 }
