@@ -51,8 +51,21 @@ impl super::NetworkEngine for CoreEngine {
                 }
             },
             Err(e) => {
-                tracing::error!("Fatal Error: DNS Resolution Failed: {}", e);
-                if let Err(send_err) = tx.try_send(TelemetryEvent::Fatal(ProbeError::DnsResolution(e.to_string()))) {
+                let probe_err = match e.kind() {
+                    std::io::ErrorKind::NotFound => {
+                        tracing::error!("Fatal Error: DNS Resolution Failed: Host not found");
+                        ProbeError::DnsResolution("Host not found".to_string())
+                    }
+                    std::io::ErrorKind::TimedOut => {
+                        tracing::error!("Fatal Error: DNS Resolution Failed: DNS request timed out");
+                        ProbeError::DnsResolution("DNS request timed out".to_string())
+                    }
+                    _ => {
+                        tracing::error!("Fatal Error: DNS Resolution Failed: {}", e);
+                        ProbeError::Socket(e)
+                    }
+                };
+                if let Err(send_err) = tx.try_send(TelemetryEvent::Fatal(probe_err)) {
                     match send_err {
                         tokio::sync::mpsc::error::TrySendError::Full(_) => {
                             tracing::warn!("UI channel overloaded, dropping telemetry frame to prevent memory exhaustion");
