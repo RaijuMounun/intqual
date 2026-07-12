@@ -66,23 +66,19 @@ impl BandwidthEngine {
                                 if bytes_counter.load(Ordering::Relaxed) == 0 {
                                     if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
                                         tracing::warn!("Cloudflare Rate Limit (Ban) Exceeded during download test");
-                                        if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
+                                        if tx.send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
                                             "Cloudflare Rate Limit (Ban) Exceeded. Please wait ~1 hour before testing again.".to_string()
-                                        ))) {
-                                            match e {
-                                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
-                                                tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
-                                            }
+                                        ))).await.is_err() {
+                                            tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
+                                            return;
                                         }
                                     } else {
                                         tracing::error!("HTTP Error during download test: {}", res.status());
-                                        if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
+                                        if tx.send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
                                             format!("HTTP Error: {}", res.status())
-                                        ))) {
-                                            match e {
-                                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
-                                                tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
-                                            }
+                                        ))).await.is_err() {
+                                            tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
+                                            return;
                                         }
                                     }
                                     token.cancel();
@@ -106,11 +102,9 @@ impl BandwidthEngine {
                                             }
                                             Err(e) => {
                                                 tracing::error!("Stream error during download test: {}", e);
-                                                if let Err(send_err) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))) {
-                                                    match send_err {
-                                                        tokio::sync::mpsc::error::TrySendError::Full(_) => {},
-                                                        tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
-                                                    }
+                                                if tx.send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))).await.is_err() {
+                                                    tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
+                                                    return;
                                                 }
                                                 token.cancel();
                                                 return;
@@ -122,11 +116,9 @@ impl BandwidthEngine {
                         }
                         Err(e) => {
                             tracing::error!("Request error during download test: {}", e);
-                            if let Err(send_err) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))) {
-                                match send_err {
-                                    tokio::sync::mpsc::error::TrySendError::Full(_) => {},
-                                    tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
-                                }
+                            if tx.send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))).await.is_err() {
+                                tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
+                                return;
                             }
                             token.cancel();
                             return;
@@ -239,27 +231,24 @@ impl BandwidthEngine {
                                 break;
                             }
                             
-                            {
-                                let mut lock = match inner_start_time_lock.lock() {
-                                    Ok(guard) => guard,
-                                    Err(e) => {
-                                        tracing::error!("Mutex poisoned during bandwidth test: {}", e);
-                                        if let Err(send_err) = inner_tx.try_send(TelemetryEvent::BandwidthError(ProbeError::ThreadPanic(e.to_string()))) {
-                                            match send_err {
-                                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
-                                                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                                                    tracing::error!("UI channel dead during upload mutex poison recovery");
-                                                }
-                                            }
-                                        }
-                                        inner_token.cancel();
-                                        break;
+                            let err_str = match inner_start_time_lock.lock() {
+                                Ok(mut guard) => {
+                                    if guard.is_none() {
+                                        *guard = Some(Instant::now());
+                                        inner_started_flag.store(true, Ordering::Release);
                                     }
-                                };
-                                if lock.is_none() {
-                                    *lock = Some(Instant::now());
-                                    inner_started_flag.store(true, Ordering::Release);
+                                    None
+                                },
+                                Err(e) => Some(e.to_string()),
+                            };
+                            
+                            if let Some(e_str) = err_str {
+                                tracing::error!("Mutex poisoned during bandwidth test: {}", e_str);
+                                if inner_tx.send(TelemetryEvent::BandwidthError(ProbeError::ThreadPanic(e_str))).await.is_err() {
+                                    tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
                                 }
+                                inner_token.cancel();
+                                break;
                             }
                             
                             inner_bytes_counter.fetch_add(CHUNK_SIZE, Ordering::Relaxed);
@@ -278,23 +267,19 @@ impl BandwidthEngine {
                                         if bytes_counter.load(Ordering::Relaxed) == 0 {
                                             if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
                                                 tracing::warn!("Cloudflare Rate Limit (Ban) Exceeded during upload test");
-                                                if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
+                                                if tx.send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
                                                     "Cloudflare Rate Limit (Ban) Exceeded during upload.".to_string()
-                                                ))) {
-                                                    match e {
-                                                        tokio::sync::mpsc::error::TrySendError::Full(_) => {},
-                                                        tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
-                                                    }
+                                                ))).await.is_err() {
+                                                    tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
+                                                    return;
                                                 }
                                             } else {
                                                 tracing::error!("HTTP Upload Error: {}", response.status());
-                                                if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
+                                                if tx.send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
                                                     format!("HTTP Upload Error: {}", response.status())
-                                                ))) {
-                                                    match e {
-                                                        tokio::sync::mpsc::error::TrySendError::Full(_) => {},
-                                                        tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
-                                                    }
+                                                ))).await.is_err() {
+                                                    tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
+                                                    return;
                                                 }
                                             }
                                             token.cancel();
@@ -304,11 +289,9 @@ impl BandwidthEngine {
                                 }
                                 Err(e) => {
                                     tracing::error!("Upload chunk failed: {}", e);
-                                    if let Err(send_err) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))) {
-                                        match send_err {
-                                            tokio::sync::mpsc::error::TrySendError::Full(_) => {},
-                                            tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
-                                        }
+                                    if tx.send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))).await.is_err() {
+                                        tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
+                                        return;
                                     }
                                     token.cancel();
                                     break;
