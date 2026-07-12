@@ -53,10 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|e| {
-                    tracing::error!("Fatal startup error (tracing_subscriber): {}", e);
-                    std::process::exit(1);
-                })
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
         )
         .with_writer(non_blocking)
         .init();

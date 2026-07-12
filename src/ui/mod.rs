@@ -316,10 +316,26 @@ pub fn run_app(
     loop {
         let mut should_redraw = false;
 
-        while let Ok(event) = rx.try_recv() {
-            if matches!(app.handle_event(event, &cmd_tx), RenderAction::Redraw) {
-                should_redraw = true;
+        let mut disconnected = false;
+        loop {
+            match rx.try_recv() {
+                Ok(event) => {
+                    if matches!(app.handle_event(event, &cmd_tx), RenderAction::Redraw) {
+                        should_redraw = true;
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    break;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
             }
+        }
+
+        if disconnected && !matches!(app.mode, AppMode::Error(_)) {
+            break;
         }
 
         if should_redraw {
