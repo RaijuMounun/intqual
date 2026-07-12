@@ -272,32 +272,47 @@ impl BandwidthEngine {
                     tokio::select! {
                         _ = token.cancelled() => { return; }
                         res = req => {
-                            if let Ok(response) = res && !response.status().is_success() {
-                                if bytes_counter.load(Ordering::Relaxed) == 0 {
-                                    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                                        tracing::warn!("Cloudflare Rate Limit (Ban) Exceeded during upload test");
-                                        if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
-                                            "Cloudflare Rate Limit (Ban) Exceeded during upload.".to_string()
-                                        ))) {
-                                            match e {
-                                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
-                                                tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
+                            match res {
+                                Ok(response) => {
+                                    if !response.status().is_success() {
+                                        if bytes_counter.load(Ordering::Relaxed) == 0 {
+                                            if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                                                tracing::warn!("Cloudflare Rate Limit (Ban) Exceeded during upload test");
+                                                if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
+                                                    "Cloudflare Rate Limit (Ban) Exceeded during upload.".to_string()
+                                                ))) {
+                                                    match e {
+                                                        tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                                        tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
+                                                    }
+                                                }
+                                            } else {
+                                                tracing::error!("HTTP Upload Error: {}", response.status());
+                                                if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
+                                                    format!("HTTP Upload Error: {}", response.status())
+                                                ))) {
+                                                    match e {
+                                                        tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                                        tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
+                                                    }
+                                                }
                                             }
+                                            token.cancel();
                                         }
-                                    } else {
-                                        tracing::error!("HTTP Upload Error: {}", response.status());
-                                        if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
-                                            format!("HTTP Upload Error: {}", response.status())
-                                        ))) {
-                                            match e {
-                                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
-                                                tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
-                                            }
+                                        return;
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("Upload chunk failed: {}", e);
+                                    if let Err(send_err) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))) {
+                                        match send_err {
+                                            tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                            tokio::sync::mpsc::error::TrySendError::Closed(_) => return,
                                         }
                                     }
                                     token.cancel();
+                                    break;
                                 }
-                                return;
                             }
                         }
                     }

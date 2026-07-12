@@ -76,9 +76,16 @@ impl IcmpProvider for UnixDgramIcmp {
                             std::slice::from_raw_parts(buf.as_ptr() as *const u8, size)
                         };
 
-                        if let Ok(reply) = IcmpEchoReply::decode(initialized_buf)
-                            && reply.sequence_number == seq {
-                                return Ok(icmp_start.elapsed().as_secs_f64() * 1000.0);
+                        match IcmpEchoReply::decode(initialized_buf) {
+                            Ok(reply) => {
+                                if reply.sequence_number == seq {
+                                    return Ok(icmp_start.elapsed().as_secs_f64() * 1000.0);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!("Dropped malformed or foreign ICMP packet: {}", e);
+                                continue;
+                            }
                         }
                     },
                     Ok(Err(e)) => {
@@ -162,31 +169,37 @@ impl IcmpProvider for UnixDgramIcmp {
                             std::slice::from_raw_parts(buf.as_ptr() as *const u8, size)
                         };
 
-                        if let Ok(response) = IcmpResponse::decode(initialized_buf) {
-                            let is_match = match &response {
-                                IcmpResponse::EchoReply(r) => r.sequence_number == seq && r.identifier == self.identifier,
-                                IcmpResponse::TimeExceeded(t) => t.original_sequence == seq && t.original_identifier == self.identifier,
-                                IcmpResponse::DestinationUnreachable(d) => d.original_sequence == seq && d.original_identifier == self.identifier,
-                                IcmpResponse::Unknown { .. } => false,
-                            };
-
-                            if is_match {
-                                let responder_ip = addr.as_socket().map(|s| s.ip()).unwrap_or_else(|| target.ip());
-                                return Ok(TracerouteHopResult {
-                                    rtt_ms: icmp_start.elapsed().as_secs_f64() * 1000.0,
-                                    responder_ip,
-                                    response,
-                                });
-                            } else {
-                                let got_id = match &response {
-                                    IcmpResponse::EchoReply(r) => Some(r.identifier),
-                                    IcmpResponse::TimeExceeded(t) => Some(t.original_identifier),
-                                    IcmpResponse::DestinationUnreachable(d) => Some(d.original_identifier),
-                                    IcmpResponse::Unknown { .. } => None,
+                        match IcmpResponse::decode(initialized_buf) {
+                            Ok(response) => {
+                                let is_match = match &response {
+                                    IcmpResponse::EchoReply(r) => r.sequence_number == seq && r.identifier == self.identifier,
+                                    IcmpResponse::TimeExceeded(t) => t.original_sequence == seq && t.original_identifier == self.identifier,
+                                    IcmpResponse::DestinationUnreachable(d) => d.original_sequence == seq && d.original_identifier == self.identifier,
+                                    IcmpResponse::Unknown { .. } => false,
                                 };
-                                if let Some(got) = got_id {
-                                    tracing::debug!("Dropped packet: ID mismatch (Expected: {}, Got: {})", self.identifier, got);
+    
+                                if is_match {
+                                    let responder_ip = addr.as_socket().map(|s| s.ip()).unwrap_or_else(|| target.ip());
+                                    return Ok(TracerouteHopResult {
+                                        rtt_ms: icmp_start.elapsed().as_secs_f64() * 1000.0,
+                                        responder_ip,
+                                        response,
+                                    });
+                                } else {
+                                    let got_id = match &response {
+                                        IcmpResponse::EchoReply(r) => Some(r.identifier),
+                                        IcmpResponse::TimeExceeded(t) => Some(t.original_identifier),
+                                        IcmpResponse::DestinationUnreachable(d) => Some(d.original_identifier),
+                                        IcmpResponse::Unknown { .. } => None,
+                                    };
+                                    if let Some(got) = got_id {
+                                        tracing::debug!("Dropped packet: ID mismatch (Expected: {}, Got: {})", self.identifier, got);
+                                    }
                                 }
+                            }
+                            Err(e) => {
+                                tracing::debug!("Dropped malformed or foreign ICMP packet: {}", e);
+                                continue;
                             }
                         }
                     },

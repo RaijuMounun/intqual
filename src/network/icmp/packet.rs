@@ -116,6 +116,7 @@ impl IcmpEchoReply {
     pub fn decode(buffer: &[u8]) -> Result<Self, ProbeError> {
         // An ICMP header must be at least 8 bytes long.
         if buffer.len() < 8 {
+            tracing::error!("Buffer too short to contain a valid ICMP header");
             return Err(ProbeError::PacketError("Buffer too short to contain a valid ICMP header".to_string()));
         }
 
@@ -126,6 +127,7 @@ impl IcmpEchoReply {
         // (Note: Unprivileged datagram sockets usually strip the IP header, 
         // so byte 0 is the start of the ICMP header).
         if type_ != ICMP_TYPE_ECHO_REPLY {
+            tracing::error!("Not an ICMP Echo Reply. Type: {}", type_);
             return Err(ProbeError::PacketError("Not an ICMP Echo Reply".to_string()));
         }
 
@@ -180,6 +182,7 @@ impl IcmpResponse {
 
     pub fn decode(buffer: &[u8]) -> Result<Self, ProbeError> {
         if buffer.len() < 8 {
+            tracing::error!("Buffer too short to contain a valid ICMP response header");
             return Err(ProbeError::PacketError("Buffer too short".to_string()));
         }
         tracing::debug!("Received ICMP Type: {}, Code: {}", buffer[0], buffer[1]);
@@ -215,13 +218,14 @@ impl IcmpResponse {
         // [8..X] Original IP Header (usually 20 bytes)
         // [X..X+8] Original ICMP Header
         if buffer.len() < 36 { // 8 + 20 + 8
-            tracing::debug!("Buffer too short for inner payload");
+            tracing::error!("Buffer too short to contain original IP and ICMP headers");
             return Err(ProbeError::PacketError("Buffer too short to contain original IP and ICMP headers".to_string()));
         }
         
         // Ensure it's an IPv4 header by checking version (first 4 bits)
         let ip_version = buffer[8] >> 4;
         if ip_version != 4 {
+            tracing::error!("Original IP header is not IPv4");
             return Err(ProbeError::PacketError("Original IP header is not IPv4".to_string()));
         }
         
@@ -229,12 +233,13 @@ impl IcmpResponse {
         let ip_header_len = ihl * 4;
         
         if buffer.len() < 8 + ip_header_len + 8 {
-            tracing::debug!("Buffer too short for inner payload");
+            tracing::error!("Buffer too short based on original IHL");
             return Err(ProbeError::PacketError("Buffer too short based on original IHL".to_string()));
         }
         
         // Offset 9 in IP header is the Protocol field
         if buffer[8 + 9] != 1 /* ICMP */ {
+            tracing::error!("Original protocol was not ICMP");
             return Err(ProbeError::PacketError("Original protocol was not ICMP".to_string()));
         }
         
