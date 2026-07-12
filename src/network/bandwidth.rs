@@ -166,7 +166,10 @@ impl BandwidthEngine {
                                 tokio::sync::mpsc::error::TrySendError::Full(_) => {
                                     tracing::warn!(target: "bandwidth_telemetry", "Telemetry channel full, shedding load / dropping data frame");
                                 },
-                                tokio::sync::mpsc::error::TrySendError::Closed(_) => break,
+                                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                                    worker_token.cancel();
+                                    break;
+                                }
                             }
                         }
                     }
@@ -325,8 +328,17 @@ impl BandwidthEngine {
                 }
                 _ = interval_up.tick() => {
                     let mut actual_start_time = None;
-                    if stream_started_flag.load(Ordering::Acquire) && let Ok(lock) = stream_start_time.lock() {
-                        actual_start_time = *lock;
+                    if stream_started_flag.load(Ordering::Acquire) {
+                        match stream_start_time.lock() {
+                            Ok(lock) => {
+                                actual_start_time = *lock;
+                            }
+                            Err(e) => {
+                                tracing::error!("Stream start time mutex poisoned: {}", e);
+                                up_worker_token.cancel();
+                                return Err(ProbeError::ThreadPanic(e.to_string()));
+                            }
+                        }
                     }
                     
                     let st = actual_start_time.unwrap_or(up_start_time);
@@ -354,7 +366,10 @@ impl BandwidthEngine {
                                 tokio::sync::mpsc::error::TrySendError::Full(_) => {
                                     tracing::warn!(target: "bandwidth_telemetry", "Telemetry channel full, shedding load / dropping data frame");
                                 },
-                                tokio::sync::mpsc::error::TrySendError::Closed(_) => break,
+                                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                                    up_worker_token.cancel();
+                                    break;
+                                }
                             }
                         }
                     }
