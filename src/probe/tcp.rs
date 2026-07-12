@@ -88,7 +88,13 @@ impl NetworkProbe for TcpProbe {
                         },
                     };
 
-                    let timestamp = crate::utils::current_timestamp()?;
+                    let timestamp = match crate::utils::current_timestamp() {
+                        Ok(ts) => ts,
+                        Err(e) => {
+                            tracing::error!("Failed to fetch current timestamp: {:?}", e);
+                            return Err(e);
+                        }
+                    };
 
                     let event = TelemetryEvent::Tcp {
                         sequence_number: current_seq,
