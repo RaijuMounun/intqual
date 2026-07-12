@@ -42,18 +42,23 @@ impl super::NetworkEngine for CoreEngine {
                 if let Some(addr) = addrs.next() {
                     addr
                 } else {
-                    tracing::error!("Fatal Error: DNS returned no addresses for {}", self.target_ip);
+                    tracing::error!("DNS resolution succeeded but returned zero IP addresses for the target.");
+                    let err = ProbeError::DnsResolution("No IP addresses found for host".to_string());
+                    if tx.send(TelemetryEvent::Fatal(err)).await.is_err() {
+                        tracing::error!("UI channel is dead. Unable to propagate fatal DNS error.");
+                    }
                     return;
                 }
             },
             Err(e) => {
                 tracing::error!("Fatal Error: DNS Resolution Failed: {}", e);
-                if let Err(send_err) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::DnsResolution(e.to_string()))) {
+                if let Err(send_err) = tx.try_send(TelemetryEvent::Fatal(ProbeError::DnsResolution(e.to_string()))) {
                     match send_err {
                         tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                            // UI overloaded, intentionally dropping telemetry frame to prevent memory exhaustion
+                            tracing::warn!("UI channel overloaded, dropping telemetry frame to prevent memory exhaustion");
                         }
                         tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                            tracing::error!("UI channel is dead. Shutting down due to DNS failure.");
                             return;
                         }
                     }
@@ -67,6 +72,7 @@ impl super::NetworkEngine for CoreEngine {
             Err(e) => {
                 tracing::error!("System Time Error: {}", e);
                 if tx.send(TelemetryEvent::Fatal(ProbeError::TimeSyncError)).await.is_err() {
+                    tracing::error!("UI channel is dead. Unable to propagate fatal time synchronization error.");
                     return;
                 }
                 return;
@@ -121,16 +127,19 @@ impl super::NetworkEngine for CoreEngine {
                                 token
                             ).await;
 
-                            if let Err(e) = result
-                                && let Err(send_err) = tx_for_bw.try_send(TelemetryEvent::BandwidthError(e)) {
+                            if let Err(e) = result {
+                                tracing::error!("Bandwidth test execution failed: {:?}", e);
+                                if let Err(send_err) = tx_for_bw.try_send(TelemetryEvent::BandwidthError(e)) {
                                     match send_err {
                                         tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                                            // UI overloaded, intentionally dropping telemetry frame to prevent memory exhaustion
+                                            tracing::warn!("UI channel overloaded, dropping telemetry frame to prevent memory exhaustion");
                                         }
                                         tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                                            tracing::error!("UI channel is dead. Shutting down bandwidth worker loop.");
                                         }
                                     }
                                 }
+                            }
                         });
                     },
                     EngineCommand::StartTraceroute(target) => {
