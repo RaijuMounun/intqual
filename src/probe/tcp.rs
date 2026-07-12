@@ -49,15 +49,21 @@ impl NetworkProbe for TcpProbe {
                         Ok(Ok(stream)) => {
                             let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
                             
-                            if let Err(e) = tokio::task::spawn_blocking(move || {
+                            match tokio::task::spawn_blocking(move || -> Result<(), ProbeError> {
                                 let sock_ref = socket2::SockRef::from(&stream);
                                 if let Err(e) = sock_ref.set_linger(Some(Duration::from_secs(0))) {
-                                    tracing::debug!("Failed to set linger (ignoring): {}", e);
+                                    tracing::error!("Failed to set SO_LINGER on TCP socket: {}", e);
+                                    return Err(ProbeError::Socket(e));
                                 }
                                 drop(stream);
+                                Ok(())
                             }).await {
-                                tracing::error!("Thread Panic: {}", e);
-                                return Err(ProbeError::ThreadPanic(e.to_string()));
+                                Ok(Err(e)) => return Err(e),
+                                Err(e) => {
+                                    tracing::error!("Thread Panic: {}", e);
+                                    return Err(ProbeError::ThreadPanic(e.to_string()));
+                                }
+                                _ => {}
                             }
 
                             Ok(elapsed)
