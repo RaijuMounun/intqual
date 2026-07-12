@@ -59,6 +59,7 @@ impl BandwidthEngine {
                                 // Otherwise, if it's the very first request, report the error.
                                 if bytes_counter.load(Ordering::Relaxed) == 0 {
                                     if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                                        tracing::warn!("Cloudflare Rate Limit (Ban) Exceeded during download test");
                                         if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
                                             "Cloudflare Rate Limit (Ban) Exceeded. Please wait ~1 hour before testing again.".to_string()
                                         ))) {
@@ -68,6 +69,7 @@ impl BandwidthEngine {
                                             }
                                         }
                                     } else {
+                                        tracing::error!("HTTP Error during download test: {}", res.status());
                                         if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
                                             format!("HTTP Error: {}", res.status())
                                         ))) {
@@ -97,6 +99,7 @@ impl BandwidthEngine {
                                                 break; // EOF, loop will reconnect to download again
                                             }
                                             Err(e) => {
+                                                tracing::error!("Stream error during download test: {}", e);
                                                 if let Err(send_err) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))) {
                                                     match send_err {
                                                         tokio::sync::mpsc::error::TrySendError::Full(_) => {},
@@ -112,6 +115,7 @@ impl BandwidthEngine {
                             }
                         }
                         Err(e) => {
+                            tracing::error!("Request error during download test: {}", e);
                             if let Err(send_err) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))) {
                                 match send_err {
                                     tokio::sync::mpsc::error::TrySendError::Full(_) => {},
@@ -221,6 +225,7 @@ impl BandwidthEngine {
                     let inner_bytes_counter = bytes_counter.clone();
                     let inner_started_flag = started_flag.clone();
                     let inner_start_time_lock = start_time_lock.clone();
+                    let inner_tx = tx.clone();
 
                     let stream = async_stream::stream! {
                         loop {
@@ -229,7 +234,15 @@ impl BandwidthEngine {
                             }
                             
                             {
-                                let mut lock = inner_start_time_lock.lock().unwrap();
+                                let mut lock = match inner_start_time_lock.lock() {
+                                    Ok(guard) => guard,
+                                    Err(e) => {
+                                        tracing::error!("Mutex poisoned during bandwidth test: {}", e);
+                                        let _ = inner_tx.try_send(TelemetryEvent::BandwidthError(ProbeError::ThreadPanic(e.to_string())));
+                                        inner_token.cancel();
+                                        break;
+                                    }
+                                };
                                 if lock.is_none() {
                                     *lock = Some(Instant::now());
                                     inner_started_flag.store(true, Ordering::Release);
@@ -249,6 +262,7 @@ impl BandwidthEngine {
                             if let Ok(response) = res && !response.status().is_success() {
                                 if bytes_counter.load(Ordering::Relaxed) == 0 {
                                     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                                        tracing::warn!("Cloudflare Rate Limit (Ban) Exceeded during upload test");
                                         if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
                                             "Cloudflare Rate Limit (Ban) Exceeded during upload.".to_string()
                                         ))) {
@@ -258,6 +272,7 @@ impl BandwidthEngine {
                                             }
                                         }
                                     } else {
+                                        tracing::error!("HTTP Upload Error: {}", response.status());
                                         if let Err(e) = tx.try_send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
                                             format!("HTTP Upload Error: {}", response.status())
                                         ))) {

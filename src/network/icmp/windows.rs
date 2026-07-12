@@ -32,8 +32,20 @@ impl IcmpProvider for RawIcmpProvider {
                 return Err(ProbeError::PermissionDenied);
             }
             Err(e) => {
-                tracing::error!("I/O Error creating socket: {}", e);
-                return Err(ProbeError::Socket(e));
+                match e.kind() {
+                    std::io::ErrorKind::ConnectionRefused => {
+                        tracing::warn!("Connection Refused creating socket: {}", e);
+                        return Err(ProbeError::Socket(e));
+                    }
+                    std::io::ErrorKind::WouldBlock => {
+                        tracing::warn!("WouldBlock creating socket: {}", e);
+                        return Err(ProbeError::Socket(e));
+                    }
+                    _ => {
+                        tracing::error!("I/O Error creating socket: {}", e);
+                        return Err(ProbeError::Socket(e));
+                    }
+                }
             }
         };
 
@@ -95,8 +107,20 @@ impl IcmpProvider for RawIcmpProvider {
                 return Err(ProbeError::PermissionDenied);
             }
             Err(e) => {
-                tracing::error!("I/O Error creating socket: {}", e);
-                return Err(ProbeError::Socket(e));
+                match e.kind() {
+                    std::io::ErrorKind::ConnectionRefused => {
+                        tracing::warn!("Connection Refused creating socket: {}", e);
+                        return Err(ProbeError::Socket(e));
+                    }
+                    std::io::ErrorKind::WouldBlock => {
+                        tracing::warn!("WouldBlock creating socket: {}", e);
+                        return Err(ProbeError::Socket(e));
+                    }
+                    _ => {
+                        tracing::error!("I/O Error creating socket: {}", e);
+                        return Err(ProbeError::Socket(e));
+                    }
+                }
             }
         };
 

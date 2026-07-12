@@ -46,7 +46,7 @@ struct Cli {
 /// #[tokio::main] Initializes the async runtime required for multiplexing concurrent 
 /// network operations without allocating a heavy OS thread for each individual connection.
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), ()> {
     let file_appender = tracing_appender::rolling::never(".", "intqual.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
@@ -62,14 +62,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // 2. Establish the telemetry pipeline.
-    // MPSC (Multi-Producer, Single-Consumer) Funnels data from the multi-threaded engine to the UI.
-    // WHY BOUNDED (100): Implements backpressure. If the UI rendering thread stalls (e.g., OS freeze),
-    // the channel won't infinitely expand and cause an OOM (Out Of Memory) crash.
     let (tx, rx) = mpsc::channel(100);
     let (cmd_tx, cmd_rx) = mpsc::channel::<crate::engine::core_engine::EngineCommand>(10);
 
     // 3. Instantiate the engine with injected configurations.
-    // Dependency Injection Keeps the engine pure and testable without hardcoding CLI contexts.
     let engine: Box<dyn engine::NetworkEngine> = if cli.mock {
         Box::new(engine::MockEngine::new())
     } else {
@@ -77,13 +73,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // 4. Ignite the async engine in the background (Fire and Forget).
-    // The engine will spawn its own detached micro-tasks and asynchronously push data into `tx`.
     engine.start(tx, cmd_rx).await;
 
     // 5. Transfer control of the main OS thread to the UI event loop.
-    // WHY: Terminal rendering (crossterm) is inherently synchronous and blocking. 
-    // Running it on the main thread ensures stable rendering while Tokio handles I/O in the background.
-    ui::run_app(rx, cmd_tx)?;
+    if let Err(e) = ui::run_app(rx, cmd_tx) {
+        tracing::error!("Fatal UI error: {}", e);
+        std::process::exit(1);
+    }
 
     Ok(())
 }

@@ -1,3 +1,5 @@
+use crate::models::ProbeError;
+
 /// ICMP Type for an Echo Request (Ping)
 const ICMP_TYPE_ECHO_REQUEST: u8 = 8;
 /// ICMP Code for an Echo Request is always 0
@@ -111,10 +113,10 @@ pub struct IcmpEchoReply {
 impl IcmpEchoReply {
     /// Decodes a raw byte buffer into an IcmpEchoReply struct.
     /// Returns an Error if the buffer is too small or malformed.
-    pub fn decode(buffer: &[u8]) -> Result<Self, &'static str> {
+    pub fn decode(buffer: &[u8]) -> Result<Self, ProbeError> {
         // An ICMP header must be at least 8 bytes long.
         if buffer.len() < 8 {
-            return Err("Buffer too short to contain a valid ICMP header");
+            return Err(ProbeError::PacketError("Buffer too short to contain a valid ICMP header".to_string()));
         }
 
         let type_ = buffer[0];
@@ -124,7 +126,7 @@ impl IcmpEchoReply {
         // (Note: Unprivileged datagram sockets usually strip the IP header, 
         // so byte 0 is the start of the ICMP header).
         if type_ != ICMP_TYPE_ECHO_REPLY {
-            return Err("Not an ICMP Echo Reply");
+            return Err(ProbeError::PacketError("Not an ICMP Echo Reply".to_string()));
         }
 
         // Reconstruct the 16-bit Identifier from Network Byte Order (Big-Endian)
@@ -176,9 +178,9 @@ impl IcmpResponse {
         buffer
     }
 
-    pub fn decode(buffer: &[u8]) -> Result<Self, &'static str> {
+    pub fn decode(buffer: &[u8]) -> Result<Self, ProbeError> {
         if buffer.len() < 8 {
-            return Err("Buffer too short");
+            return Err(ProbeError::PacketError("Buffer too short".to_string()));
         }
         tracing::debug!("Received ICMP Type: {}, Code: {}", buffer[0], buffer[1]);
         match buffer[0] {
@@ -189,7 +191,7 @@ impl IcmpResponse {
         }
     }
 
-    fn decode_time_exceeded(buffer: &[u8]) -> Result<IcmpTimeExceeded, &'static str> {
+    fn decode_time_exceeded(buffer: &[u8]) -> Result<IcmpTimeExceeded, ProbeError> {
         let (identifier, sequence) = Self::decode_error_body(buffer)?;
         Ok(IcmpTimeExceeded {
             code: buffer[1],
@@ -198,7 +200,7 @@ impl IcmpResponse {
         })
     }
 
-    fn decode_dest_unreachable(buffer: &[u8]) -> Result<IcmpDestUnreachable, &'static str> {
+    fn decode_dest_unreachable(buffer: &[u8]) -> Result<IcmpDestUnreachable, ProbeError> {
         let (identifier, sequence) = Self::decode_error_body(buffer)?;
         Ok(IcmpDestUnreachable {
             code: buffer[1],
@@ -207,20 +209,20 @@ impl IcmpResponse {
         })
     }
 
-    fn decode_error_body(buffer: &[u8]) -> Result<(u16, u16), &'static str> {
+    fn decode_error_body(buffer: &[u8]) -> Result<(u16, u16), ProbeError> {
         // Buffer layout (DGRAM/RAW ICMP payload):
         // [0..8] ICMP Header (Time Exceeded / Dest Unreachable)
         // [8..X] Original IP Header (usually 20 bytes)
         // [X..X+8] Original ICMP Header
         if buffer.len() < 36 { // 8 + 20 + 8
             tracing::debug!("Buffer too short for inner payload");
-            return Err("Buffer too short to contain original IP and ICMP headers");
+            return Err(ProbeError::PacketError("Buffer too short to contain original IP and ICMP headers".to_string()));
         }
         
         // Ensure it's an IPv4 header by checking version (first 4 bits)
         let ip_version = buffer[8] >> 4;
         if ip_version != 4 {
-            return Err("Original IP header is not IPv4");
+            return Err(ProbeError::PacketError("Original IP header is not IPv4".to_string()));
         }
         
         let ihl = (buffer[8] & 0x0F) as usize;
@@ -228,12 +230,12 @@ impl IcmpResponse {
         
         if buffer.len() < 8 + ip_header_len + 8 {
             tracing::debug!("Buffer too short for inner payload");
-            return Err("Buffer too short based on original IHL");
+            return Err(ProbeError::PacketError("Buffer too short based on original IHL".to_string()));
         }
         
         // Offset 9 in IP header is the Protocol field
         if buffer[8 + 9] != 1 /* ICMP */ {
-            return Err("Original protocol was not ICMP");
+            return Err(ProbeError::PacketError("Original protocol was not ICMP".to_string()));
         }
         
         let orig_icmp_offset = 8 + ip_header_len;

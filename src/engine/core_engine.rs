@@ -155,6 +155,7 @@ impl super::NetworkEngine for CoreEngine {
                             if let Err(e) = crate::probe::NetworkProbe::run(&mut probe, tx_traceroute.clone(), token).await {
                                 tracing::error!("Traceroute probe encountered fatal error: {:?}", e);
                                 if tx_traceroute.send(TelemetryEvent::Fatal(e)).await.is_err() {
+                                    tracing::error!("UI channel is dead. Cannot send fatal telemetry event. Shutting down engine worker.");
                                 }
                             }
                         });
@@ -185,6 +186,7 @@ impl CoreEngine {
             if let Err(e) = ping_probe.run(tx_ping.clone(), token_ping).await {
                 tracing::error!("Ping probe encountered fatal error: {:?}", e);
                 if tx_ping.send(TelemetryEvent::Fatal(e)).await.is_err() {
+                    tracing::error!("UI channel is dead. Cannot send fatal telemetry event. Shutting down engine worker.");
                 }
             }
         });
@@ -195,6 +197,7 @@ impl CoreEngine {
             if let Err(e) = tcp_probe.run(tx_tcp.clone(), token_tcp).await {
                 tracing::error!("TCP probe encountered fatal error: {:?}", e);
                 if tx_tcp.send(TelemetryEvent::Fatal(e)).await.is_err() {
+                    tracing::error!("UI channel is dead. Cannot send fatal telemetry event. Shutting down engine worker.");
                 }
             }
         });

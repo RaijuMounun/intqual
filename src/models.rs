@@ -18,6 +18,8 @@ pub enum ProbeError {
     TimeSyncError,
     #[error("Thread Panic: {0}")]
     ThreadPanic(String),
+    #[error("Packet Build/Decode Error: {0}")]
+    PacketError(String),
 }
 
 /// The canonical data contract between the Network Engine (Producer) and the UI (Consumer).

@@ -63,8 +63,24 @@ impl NetworkProbe for TcpProbe {
                             Ok(elapsed)
                         },
                         Ok(Err(e)) => {
-                            tracing::error!("I/O Error: {}", e);
-                            Err(ProbeError::Socket(e))
+                            match e.kind() {
+                                std::io::ErrorKind::ConnectionRefused => {
+                                    tracing::warn!("TCP Connection Refused: {}", e);
+                                    Err(ProbeError::Socket(e))
+                                }
+                                std::io::ErrorKind::TimedOut => {
+                                    tracing::warn!("TCP Connection TimedOut: {}", e);
+                                    Err(ProbeError::TcpTimeout)
+                                }
+                                std::io::ErrorKind::PermissionDenied => {
+                                    tracing::warn!("TCP Permission Denied: {}", e);
+                                    Err(ProbeError::PermissionDenied)
+                                }
+                                _ => {
+                                    tracing::error!("TCP I/O Error: {}", e);
+                                    Err(ProbeError::Socket(e))
+                                }
+                            }
                         },
                         Err(e) => {
                             tracing::warn!("Timeout: {}", e);
