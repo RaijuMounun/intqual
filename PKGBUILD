@@ -1,6 +1,6 @@
 # Maintainer: Eren Keskinoğlu <erenkeskinoglu@outlook.com>
 pkgname=intqual
-pkgver=1.0.7
+pkgver=1.0.8
 pkgrel=1
 pkgdesc="A dual-layer unprivileged network latency analyzer and observability tool (ICMP/TCP)"
 arch=('x86_64' 'aarch64')
@@ -10,7 +10,7 @@ depends=('gcc-libs')
 makedepends=('cargo' 'cmake' 'go')
 options=('!lto')
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/RaijuMounun/${pkgname}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('b694fa001ecb19e627df4a387c00709e4029cc9d5619386d892a723a218c00a8')
+sha256sums=('7df89a78aa58a8fc3d688710af5573a36d8c79747b82df485a6fa1e15c8fbaad')
 
 build() {
   cd "${pkgname}-${pkgver}"
