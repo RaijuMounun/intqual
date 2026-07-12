@@ -27,14 +27,21 @@ impl IcmpProvider for RawIcmpProvider {
         
         let socket = match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
             Ok(s) => s,
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(ProbeError::PermissionDenied),
-            Err(e) => return Err(ProbeError::Socket(e)),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                tracing::error!("Permission Denied creating raw socket: {}", e);
+                return Err(ProbeError::PermissionDenied);
+            }
+            Err(e) => {
+                tracing::error!("I/O Error creating socket: {}", e);
+                return Err(ProbeError::Socket(e));
+            }
         };
 
         let packet = IcmpEchoRequest::new(self.identifier, seq, vec![]);
         let packet_bytes = packet.encode();
 
         if let Err(e) = socket.send_to(&packet_bytes, &(*target).into()) {
+            tracing::error!("I/O Error sending packet: {}", e);
             return Err(ProbeError::Socket(e));
         }
 
@@ -53,16 +60,28 @@ impl IcmpProvider for RawIcmpProvider {
                                 return Ok(icmp_start.elapsed().as_secs_f64() * 1000.0);
                         }
                     },
-                    Err(e) => return Err(ProbeError::Socket(e)),
+                    Err(e) => {
+                        tracing::error!("I/O Error receiving packet: {}", e);
+                        return Err(ProbeError::Socket(e))
+                    },
                 }
             }
         }));
 
         match timeout_future.await {
             Ok(Ok(Ok(res))) => Ok(res),
-            Ok(Ok(Err(e))) => Err(e),
-            Ok(Err(e)) => Err(ProbeError::ThreadPanic(format!("Thread Panicked: {}", e))),
-            Err(_) => Err(ProbeError::IcmpTimeout),
+            Ok(Ok(Err(e))) => {
+                tracing::error!("I/O Error: {}", e);
+                Err(e)
+            },
+            Ok(Err(e)) => {
+                tracing::error!("Thread Panic: {}", e);
+                Err(ProbeError::ThreadPanic(format!("Thread Panicked: {}", e)))
+            },
+            Err(e) => {
+                tracing::warn!("Timeout: {}", e);
+                Err(ProbeError::IcmpTimeout)
+            }
         }
     }
 
@@ -71,11 +90,18 @@ impl IcmpProvider for RawIcmpProvider {
         
         let socket = match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
             Ok(s) => s,
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(ProbeError::PermissionDenied),
-            Err(e) => return Err(ProbeError::Socket(e)),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                tracing::error!("Permission Denied creating raw socket: {}", e);
+                return Err(ProbeError::PermissionDenied);
+            }
+            Err(e) => {
+                tracing::error!("I/O Error creating socket: {}", e);
+                return Err(ProbeError::Socket(e));
+            }
         };
 
         if let Err(e) = socket.set_ttl_v4(ttl) {
+            tracing::error!("I/O Error setting TTL: {}", e);
             return Err(ProbeError::Socket(e));
         }
 
@@ -83,6 +109,7 @@ impl IcmpProvider for RawIcmpProvider {
         let packet_bytes = packet.encode();
 
         if let Err(e) = socket.send_to(&packet_bytes, &(*target).into()) {
+            tracing::error!("I/O Error sending packet: {}", e);
             return Err(ProbeError::Socket(e));
         }
 
@@ -129,16 +156,28 @@ impl IcmpProvider for RawIcmpProvider {
                             }
                         }
                     },
-                    Err(e) => return Err(ProbeError::Socket(e)),
+                    Err(e) => {
+                        tracing::error!("I/O Error receiving packet: {}", e);
+                        return Err(ProbeError::Socket(e))
+                    },
                 }
             }
         }));
 
         match timeout_future.await {
             Ok(Ok(Ok(res))) => Ok(res),
-            Ok(Ok(Err(e))) => Err(e),
-            Ok(Err(e)) => Err(ProbeError::ThreadPanic(format!("Thread Panicked: {}", e))),
-            Err(_) => Err(ProbeError::IcmpTimeout),
+            Ok(Ok(Err(e))) => {
+                tracing::error!("I/O Error: {}", e);
+                Err(e)
+            },
+            Ok(Err(e)) => {
+                tracing::error!("Thread Panic: {}", e);
+                Err(ProbeError::ThreadPanic(format!("Thread Panicked: {}", e)))
+            },
+            Err(e) => {
+                tracing::warn!("Timeout: {}", e);
+                Err(ProbeError::IcmpTimeout)
+            }
         }
     }
 }

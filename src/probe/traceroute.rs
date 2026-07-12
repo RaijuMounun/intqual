@@ -80,6 +80,7 @@ impl NetworkProbe for TracerouteProbe {
             }
             
             if let Some(err) = fatal_error {
+                tracing::error!("Traceroute probe failing due to fatal error: {}", err);
                 return Err(err);
             }
             

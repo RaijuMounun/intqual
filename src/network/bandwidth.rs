@@ -135,10 +135,12 @@ impl BandwidthEngine {
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     worker_token.cancel();
+                    tracing::error!("Bandwidth test cancelled by user");
                     return Err(ProbeError::BandwidthTestFailed("Cancelled by user".to_string()));
                 }
                 _ = worker_token.cancelled() => {
                     // One of the workers hit an error (e.g. 429) and cancelled the token.
+                    tracing::error!("Test aborted internally due to server error (e.g. Rate Limit)");
                     return Err(ProbeError::BandwidthTestFailed("Test aborted internally due to server error (e.g. Rate Limit)".to_string()));
                 }
                 _ = &mut deadline => {
@@ -171,12 +173,14 @@ impl BandwidthEngine {
         // Wait for download workers to exit gracefully
         for w in workers {
             if let Err(e) = w.await {
+                tracing::error!("Thread Panic during bandwidth test: {}", e);
                 return Err(ProbeError::ThreadPanic(e.to_string()));
             }
         }
 
         let elapsed = start_time.elapsed().as_secs_f64();
         if elapsed == 0.0 {
+            tracing::error!("Elapsed time is zero in bandwidth test");
             return Err(ProbeError::BandwidthTestFailed("Elapsed time is zero".to_string()));
         }
 
@@ -280,12 +284,14 @@ impl BandwidthEngine {
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     up_worker_token.cancel();
+                    tracing::error!("Upload bandwidth test cancelled by user");
                     return Err(ProbeError::BandwidthTestFailed("Cancelled by user".to_string()));
                 }
                 _ = up_worker_token.cancelled() => {
                     if is_timeout.load(Ordering::Acquire) {
                         break;
                     } else {
+                        tracing::error!("Upload test aborted internally due to server error");
                         return Err(ProbeError::BandwidthTestFailed("Test aborted internally due to server error".to_string()));
                     }
                 }
@@ -328,6 +334,7 @@ impl BandwidthEngine {
 
         for w in up_workers {
             if let Err(e) = w.await {
+                tracing::error!("Thread Panic during upload test: {}", e);
                 return Err(ProbeError::ThreadPanic(e.to_string()));
             }
         }

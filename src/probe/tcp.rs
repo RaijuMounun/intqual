@@ -56,13 +56,20 @@ impl NetworkProbe for TcpProbe {
                                 }
                                 drop(stream);
                             }).await {
+                                tracing::error!("Thread Panic: {}", e);
                                 return Err(ProbeError::ThreadPanic(e.to_string()));
                             }
 
                             Ok(elapsed)
                         },
-                        Ok(Err(e)) => Err(ProbeError::Socket(e)),
-                        Err(_) => Err(ProbeError::TcpTimeout),
+                        Ok(Err(e)) => {
+                            tracing::error!("I/O Error: {}", e);
+                            Err(ProbeError::Socket(e))
+                        },
+                        Err(e) => {
+                            tracing::warn!("Timeout: {}", e);
+                            Err(ProbeError::TcpTimeout)
+                        },
                     };
 
                     let timestamp = crate::utils::current_timestamp()?;

@@ -72,7 +72,9 @@ impl NetworkStats {
             Err(ProbeError::IcmpTimeout) | Err(ProbeError::TcpTimeout) => {
                 self.loss_count += 1;
             }
-            Err(_) => {}
+            Err(e) => {
+                tracing::warn!("UI Parsing fallback triggered: {:?}", e);
+            }
         }
         
         if self.total_count > 0 {
@@ -173,7 +175,10 @@ impl AppState {
                 
                 let p_val = match &result {
                     Ok(p) => *p,
-                    Err(_) => 0.0,
+                    Err(e) => {
+                        tracing::warn!("UI Parsing fallback triggered: {:?}", e);
+                        0.0
+                    },
                 };
                 Self::push_chart_data(&mut self.icmp_data, (sequence_number as f64, p_val));
                 
@@ -221,7 +226,10 @@ impl AppState {
                 
                 let p_val = match &result {
                     Ok(p) => *p,
-                    Err(_) => 0.0,
+                    Err(e) => {
+                        tracing::warn!("UI Parsing fallback triggered: {:?}", e);
+                        0.0
+                    },
                 };
                 Self::push_chart_data(&mut self.tcp_data, (sequence_number as f64, p_val));
                 

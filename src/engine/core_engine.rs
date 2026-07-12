@@ -64,7 +64,8 @@ impl super::NetworkEngine for CoreEngine {
 
         let icmp_identifier = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(d) => (d.subsec_nanos() % 65535) as u16,
-            Err(_) => {
+            Err(e) => {
+                tracing::error!("System Time Error: {}", e);
                 if tx.send(TelemetryEvent::Fatal(ProbeError::TimeSyncError)).await.is_err() {
                     return;
                 }
