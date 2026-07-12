@@ -58,7 +58,10 @@ impl NetworkProbe for TcpProbe {
                                 drop(stream);
                                 Ok(())
                             }).await {
-                                Ok(Err(e)) => return Err(e),
+                                Ok(Err(e)) => {
+                                    tracing::error!("TCP probe worker task failed: {:?}", e);
+                                    return Err(e);
+                                }
                                 Err(e) => {
                                     tracing::error!("Thread Panic: {}", e);
                                     return Err(ProbeError::ThreadPanic(e.to_string()));
@@ -113,6 +116,7 @@ impl NetworkProbe for TcpProbe {
                         match e {
                             tokio::sync::mpsc::error::TrySendError::Full(_) => {
                                 // UI overloaded, intentionally dropping telemetry frame to prevent memory exhaustion
+                                tracing::warn!(target: "probe_telemetry", "Telemetry channel full, shedding load / dropping probe frame");
                             }
                             tokio::sync::mpsc::error::TrySendError::Closed(_) => {
                                 return Ok(());

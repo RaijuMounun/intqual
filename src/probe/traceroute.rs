@@ -104,6 +104,7 @@ impl NetworkProbe for TracerouteProbe {
                 match e {
                     tokio::sync::mpsc::error::TrySendError::Full(_) => {
                         // UI overloaded, intentionally dropping telemetry frame to prevent memory exhaustion
+                        tracing::warn!(target: "probe_telemetry", "Telemetry channel full, shedding load / dropping probe frame");
                     }
                     tokio::sync::mpsc::error::TrySendError::Closed(_) => {
                         return Ok(());
@@ -120,6 +121,7 @@ impl NetworkProbe for TracerouteProbe {
             match e {
                 tokio::sync::mpsc::error::TrySendError::Full(_) => {
                     // UI overloaded, intentionally dropping telemetry frame to prevent memory exhaustion
+                    tracing::warn!(target: "probe_telemetry", "Telemetry channel full, shedding load / dropping probe frame");
                 }
                 tokio::sync::mpsc::error::TrySendError::Closed(_) => {
                     return Ok(());
