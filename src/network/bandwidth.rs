@@ -163,7 +163,9 @@ impl BandwidthEngine {
                         });
                         if let Err(e) = tx.try_send(event) {
                             match e {
-                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                                    tracing::warn!(target: "bandwidth_telemetry", "Telemetry channel full, shedding load / dropping data frame");
+                                },
                                 tokio::sync::mpsc::error::TrySendError::Closed(_) => break,
                             }
                         }
@@ -349,7 +351,9 @@ impl BandwidthEngine {
                         });
                         if let Err(e) = tx.try_send(event) {
                             match e {
-                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                                    tracing::warn!(target: "bandwidth_telemetry", "Telemetry channel full, shedding load / dropping data frame");
+                                },
                                 tokio::sync::mpsc::error::TrySendError::Closed(_) => break,
                             }
                         }
@@ -379,7 +383,9 @@ impl BandwidthEngine {
         });
         if let Err(e) = tx.try_send(final_event) {
             match e {
-                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    tracing::warn!(target: "bandwidth_telemetry", "Telemetry channel full, shedding load / dropping data frame");
+                },
                 tokio::sync::mpsc::error::TrySendError::Closed(_) => return Ok(()),
             }
         }

@@ -42,7 +42,7 @@ impl IcmpProvider for RawIcmpProvider {
                         return Err(ProbeError::Socket(e));
                     }
                     _ => {
-                        tracing::error!("I/O Error creating socket: {}", e);
+                        tracing::error!("Unclassified OS Network Error occurred: {:?}", e.kind());
                         return Err(ProbeError::Socket(e));
                     }
                 }
@@ -124,7 +124,7 @@ impl IcmpProvider for RawIcmpProvider {
                         return Err(ProbeError::Socket(e));
                     }
                     _ => {
-                        tracing::error!("I/O Error creating socket: {}", e);
+                        tracing::error!("Unclassified OS Network Error occurred: {:?}", e.kind());
                         return Err(ProbeError::Socket(e));
                     }
                 }
