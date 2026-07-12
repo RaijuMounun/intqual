@@ -15,14 +15,20 @@ impl BandwidthEngine {
         tx: mpsc::Sender<TelemetryEvent>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<(), ProbeError> {
-        let client = Client::builder()
+        let client = match Client::builder()
             .user_agent("intqual-net-tester/1.0")
             .tcp_keepalive(std::time::Duration::from_secs(15))
             .pool_max_idle_per_host(16)
             .connect_timeout(std::time::Duration::from_secs(5))
             .danger_accept_invalid_certs(true)
             .build()
-            .map_err(|e| ProbeError::BandwidthTestFailed(format!("Failed to build HTTP client: {}", e)))?;
+        {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Failed to build HTTP client for bandwidth test: {:?}", e);
+                return Err(ProbeError::BandwidthTestFailed(format!("Failed to build HTTP client: {}", e)));
+            }
+        };
 
         let url = format!("https://{}{}", target_host, target_path);
 
@@ -238,7 +244,14 @@ impl BandwidthEngine {
                                     Ok(guard) => guard,
                                     Err(e) => {
                                         tracing::error!("Mutex poisoned during bandwidth test: {}", e);
-                                        let _ = inner_tx.try_send(TelemetryEvent::BandwidthError(ProbeError::ThreadPanic(e.to_string())));
+                                        if let Err(send_err) = inner_tx.try_send(TelemetryEvent::BandwidthError(ProbeError::ThreadPanic(e.to_string()))) {
+                                            match send_err {
+                                                tokio::sync::mpsc::error::TrySendError::Full(_) => {},
+                                                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                                                    tracing::error!("UI channel dead during upload mutex poison recovery");
+                                                }
+                                            }
+                                        }
                                         inner_token.cancel();
                                         break;
                                     }
