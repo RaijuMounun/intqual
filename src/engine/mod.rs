@@ -5,11 +5,8 @@ use crate::probe::TelemetryEvent;
 use crate::engine::core_engine::EngineCommand;
 use tokio::sync::mpsc;
 
-use std::future::Future;
-use std::pin::Pin;
-
 pub trait NetworkEngine: Send {
-    fn start(self: Box<Self>, tx: mpsc::Sender<TelemetryEvent>, cmd_rx: mpsc::Receiver<EngineCommand>) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+    fn start(self, tx: mpsc::Sender<TelemetryEvent>, cmd_rx: mpsc::Receiver<EngineCommand>) -> impl std::future::Future<Output = ()> + Send;
 }
 
 pub use core_engine::CoreEngine;

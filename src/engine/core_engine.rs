@@ -34,8 +34,7 @@ impl CoreEngine {
 }
 
 impl super::NetworkEngine for CoreEngine {
-    fn start(self: Box<Self>, tx: mpsc::Sender<TelemetryEvent>, mut cmd_rx: mpsc::Receiver<EngineCommand>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-        Box::pin(async move {
+    async fn start(self, tx: mpsc::Sender<TelemetryEvent>, mut cmd_rx: mpsc::Receiver<EngineCommand>) {
             let addr_string = format!("{}:{}", self.target_ip, self.target_port);
         let resolved_addr: SocketAddr = match tokio::net::lookup_host(&addr_string).await {
             Ok(mut addrs) => {
@@ -96,7 +95,7 @@ impl super::NetworkEngine for CoreEngine {
             let token = CancellationToken::new();
             let mut active_token: Option<CancellationToken> = Some(token.clone());
             let mut bw_cancel_token: Option<CancellationToken> = None;
-            Self::spawn_probes(&self.target_ip, resolved_addr, self.interval, self.timeout, icmp_identifier, tx.clone(), token);
+            Self::spawn_probes(self.target_ip.clone(), resolved_addr, self.interval, self.timeout, icmp_identifier, tx.clone(), token);
 
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
@@ -112,7 +111,7 @@ impl super::NetworkEngine for CoreEngine {
                         if active_token.is_none() {
                             let new_token = CancellationToken::new();
                             active_token = Some(new_token.clone());
-                            Self::spawn_probes(&self.target_ip, resolved_addr, self.interval, self.timeout, icmp_identifier, tx.clone(), new_token);
+                            Self::spawn_probes(self.target_ip.clone(), resolved_addr, self.interval, self.timeout, icmp_identifier, tx.clone(), new_token);
                         }
                     },
                     EngineCommand::Stop => {
@@ -185,13 +184,12 @@ impl super::NetworkEngine for CoreEngine {
                 }
             }
         });
-        })
     }
 }
 
 impl CoreEngine {
     fn spawn_probes(
-        target_ip: &Arc<String>,
+        target_ip: Arc<String>,
         resolved_addr: SocketAddr,
         interval: Duration,
         timeout: Duration,
@@ -199,8 +197,8 @@ impl CoreEngine {
         tx: mpsc::Sender<TelemetryEvent>,
         token: CancellationToken,
     ) {
-        let mut ping_probe = PingProbe::new(Arc::clone(target_ip), resolved_addr, interval, timeout, icmp_identifier);
-        let mut tcp_probe = TcpProbe::new(Arc::clone(target_ip), resolved_addr, interval, timeout);
+        let mut ping_probe = PingProbe::new(target_ip.clone(), resolved_addr, interval, timeout, icmp_identifier);
+        let mut tcp_probe = TcpProbe::new(target_ip, resolved_addr, interval, timeout);
 
         let tx_ping = tx.clone();
         let token_ping = token.clone();

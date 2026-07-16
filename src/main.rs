@@ -65,15 +65,15 @@ async fn main() -> Result<(), ()> {
     let (tx, rx) = mpsc::channel(100);
     let (cmd_tx, cmd_rx) = mpsc::channel::<crate::engine::core_engine::EngineCommand>(10);
 
-    // 3. Instantiate the engine with injected configurations.
-    let engine: Box<dyn engine::NetworkEngine> = if cli.mock {
-        Box::new(engine::MockEngine::new())
+    // 3 & 4. Instantiate and ignite the async engine without dynamic dispatch.
+    use crate::engine::NetworkEngine;
+    if cli.mock {
+        let engine = engine::MockEngine;
+        engine.start(tx, cmd_rx).await;
     } else {
-        Box::new(engine::CoreEngine::new(cli.target, cli.port, cli.interval, cli.timeout))
-    };
-
-    // 4. Ignite the async engine in the background (Fire and Forget).
-    engine.start(tx, cmd_rx).await;
+        let engine = engine::CoreEngine::new(cli.target, cli.port, cli.interval, cli.timeout);
+        engine.start(tx, cmd_rx).await;
+    }
 
     // 5. Transfer control of the main OS thread to the UI event loop.
     if let Err(e) = ui::run_app(rx, cmd_tx) {
