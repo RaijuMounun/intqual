@@ -12,8 +12,8 @@ pub struct ErrorWidget;
 impl ErrorWidget {
     pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
         let error_msg = match &app.mode {
-            AppMode::Error(msg) => msg.clone(),
-            _ => "Unknown Error".to_string(),
+            AppMode::Error(msg) => msg.as_str(),
+            _ => "Unknown Error",
         };
 
         let block = Block::default()

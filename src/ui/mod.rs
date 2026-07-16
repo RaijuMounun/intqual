@@ -166,7 +166,9 @@ impl AppState {
     pub fn handle_event(&mut self, event: TelemetryEvent, _cmd_tx: &mpsc::Sender<EngineCommand>) -> RenderAction {
         match event {
             TelemetryEvent::Ping { sequence_number, target_ip, result, timestamp } => {
-                self.current_target_ip = target_ip.clone();
+                if self.current_target_ip != target_ip {
+                    self.current_target_ip = target_ip.clone();
+                }
                 if sequence_number > self.latest_sequence {
                     self.latest_sequence = sequence_number;
                 }
@@ -217,7 +219,9 @@ impl AppState {
                 RenderAction::Redraw
             }
             TelemetryEvent::Tcp { sequence_number, target_ip, result, timestamp } => {
-                self.current_target_ip = target_ip.clone();
+                if self.current_target_ip != target_ip {
+                    self.current_target_ip = target_ip.clone();
+                }
                 if sequence_number > self.latest_sequence {
                     self.latest_sequence = sequence_number;
                 }

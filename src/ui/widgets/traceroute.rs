@@ -29,9 +29,9 @@ impl TracerouteWidget {
                     Style::default().fg(Color::White)
                 };
 
-                (ip.clone(), rtt, style)
+                (ip.as_str(), rtt, style)
             } else {
-                ("*".to_string(), "*".to_string(), Style::default().fg(Color::DarkGray))
+                ("*", "*".to_string(), Style::default().fg(Color::DarkGray))
             };
 
             rows.push(Row::new(vec![
