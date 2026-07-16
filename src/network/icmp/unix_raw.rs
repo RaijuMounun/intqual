@@ -62,7 +62,7 @@ impl IcmpProvider for RawIcmpProvider {
             }
         };
 
-        let packet = IcmpEchoRequest::new(self.identifier, seq, vec![]);
+        let packet = IcmpEchoRequest::new(self.identifier, seq, &[]);
         let packet_bytes = packet.encode();
 
         if let Err(e) = async_fd.get_ref().send_to(&packet_bytes, &(*target).into()) {
@@ -170,7 +170,7 @@ impl IcmpProvider for RawIcmpProvider {
             }
         };
 
-        let packet = IcmpEchoRequest::new(self.identifier, seq, vec![]);
+        let packet = IcmpEchoRequest::new(self.identifier, seq, &[]);
         let packet_bytes = packet.encode();
 
         if let Err(e) = async_fd.get_ref().send_to(&packet_bytes, &(*target).into()) {

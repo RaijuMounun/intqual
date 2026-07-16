@@ -49,7 +49,12 @@ impl IcmpProvider for RawIcmpProvider {
             }
         };
 
-        let packet = IcmpEchoRequest::new(self.identifier, seq, vec![]);
+        if let Err(e) = socket.set_read_timeout(Some(timeout)) {
+            tracing::error!("I/O Error setting read timeout: {}", e);
+            return Err(ProbeError::Socket(e));
+        }
+
+        let packet = IcmpEchoRequest::new(self.identifier, seq, &[]);
         let packet_bytes = packet.encode();
 
         if let Err(e) = socket.send_to(&packet_bytes, &(*target).into()) {
@@ -58,7 +63,7 @@ impl IcmpProvider for RawIcmpProvider {
         }
 
         let identifier = self.identifier;
-        let timeout_future = tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || {
+        let recv_task = tokio::task::spawn_blocking(move || {
             let mut buf = [MaybeUninit::uninit(); 128];
             loop {
                 match socket.recv_from(&mut buf) {
@@ -80,26 +85,23 @@ impl IcmpProvider for RawIcmpProvider {
                         }
                     },
                     Err(e) => {
+                        if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
+                            tracing::warn!("Timeout: OS recv_from timed out");
+                            return Err(ProbeError::IcmpTimeout);
+                        }
                         tracing::error!("I/O Error receiving packet: {}", e);
                         return Err(ProbeError::Socket(e))
                     },
                 }
             }
-        }));
+        });
 
-        match timeout_future.await {
-            Ok(Ok(Ok(res))) => Ok(res),
-            Ok(Ok(Err(e))) => {
-                tracing::error!("I/O Error: {}", e);
-                Err(e)
-            },
-            Ok(Err(e)) => {
+        match recv_task.await {
+            Ok(Ok(res)) => Ok(res),
+            Ok(Err(e)) => Err(e),
+            Err(e) => {
                 tracing::error!("Thread Panic: {}", e);
                 Err(ProbeError::ThreadPanic(format!("Thread Panicked: {}", e)))
-            },
-            Err(e) => {
-                tracing::warn!("Timeout: {}", e);
-                Err(ProbeError::IcmpTimeout)
             }
         }
     }
@@ -136,7 +138,12 @@ impl IcmpProvider for RawIcmpProvider {
             return Err(ProbeError::Socket(e));
         }
 
-        let packet = IcmpEchoRequest::new(self.identifier, seq, vec![]);
+        if let Err(e) = socket.set_read_timeout(Some(timeout)) {
+            tracing::error!("I/O Error setting read timeout: {}", e);
+            return Err(ProbeError::Socket(e));
+        }
+
+        let packet = IcmpEchoRequest::new(self.identifier, seq, &[]);
         let packet_bytes = packet.encode();
 
         if let Err(e) = socket.send_to(&packet_bytes, &(*target).into()) {
@@ -147,7 +154,7 @@ impl IcmpProvider for RawIcmpProvider {
         let target_clone = target.clone();
         let identifier = self.identifier;
         
-        let timeout_future = tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || {
+        let recv_task = tokio::task::spawn_blocking(move || {
             let mut buf = [MaybeUninit::uninit(); 1500];
             loop {
                 match socket.recv_from(&mut buf) {
@@ -193,26 +200,23 @@ impl IcmpProvider for RawIcmpProvider {
                         }
                     },
                     Err(e) => {
+                        if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut {
+                            tracing::warn!("Timeout: OS recv_from timed out");
+                            return Err(ProbeError::IcmpTimeout);
+                        }
                         tracing::error!("I/O Error receiving packet: {}", e);
                         return Err(ProbeError::Socket(e))
                     },
                 }
             }
-        }));
+        });
 
-        match timeout_future.await {
-            Ok(Ok(Ok(res))) => Ok(res),
-            Ok(Ok(Err(e))) => {
-                tracing::error!("I/O Error: {}", e);
-                Err(e)
-            },
-            Ok(Err(e)) => {
+        match recv_task.await {
+            Ok(Ok(res)) => Ok(res),
+            Ok(Err(e)) => Err(e),
+            Err(e) => {
                 tracing::error!("Thread Panic: {}", e);
                 Err(ProbeError::ThreadPanic(format!("Thread Panicked: {}", e)))
-            },
-            Err(e) => {
-                tracing::warn!("Timeout: {}", e);
-                Err(ProbeError::IcmpTimeout)
             }
         }
     }

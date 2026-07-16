@@ -203,8 +203,6 @@ impl BandwidthEngine {
         const CHUNK_SIZE: usize = 64 * 1024;
         static STATIC_PAYLOAD: [u8; CHUNK_SIZE] = [0u8; CHUNK_SIZE];
         
-        let stream_started_flag = Arc::new(AtomicBool::new(false));
-        let stream_start_time = Arc::new(std::sync::Mutex::new(None::<Instant>));
         let is_timeout = Arc::new(AtomicBool::new(false));
         
         let up_start_time = Instant::now();
@@ -215,92 +213,55 @@ impl BandwidthEngine {
             let client = client.clone();
             let bytes_counter = total_up_bytes.clone();
             let tx = tx.clone();
-            let started_flag = stream_started_flag.clone();
-            let start_time_lock = stream_start_time.clone();
 
             let handle = tokio::spawn(async move {
-                loop {
-                    if token.is_cancelled() { 
-                        return; 
-                    }
-                    
-                    let inner_token = token.clone();
-                    let inner_bytes_counter = bytes_counter.clone();
-                    let inner_started_flag = started_flag.clone();
-                    let inner_start_time_lock = start_time_lock.clone();
-                    let inner_tx = tx.clone();
+                let worker_start_time = Instant::now();
+                let stream_token = token.clone();
+                let stream_bytes_counter = bytes_counter.clone();
 
-                    let stream = async_stream::stream! {
-                        loop {
-                            if inner_token.is_cancelled() {
-                                break;
-                            }
-                            
-                            let err_str = match inner_start_time_lock.lock() {
-                                Ok(mut guard) => {
-                                    if guard.is_none() {
-                                        *guard = Some(Instant::now());
-                                        inner_started_flag.store(true, Ordering::Release);
-                                    }
-                                    None
-                                },
-                                Err(e) => Some(e.to_string()),
-                            };
-                            
-                            if let Some(e_str) = err_str {
-                                tracing::error!("Mutex poisoned during bandwidth test: {}", e_str);
-                                if inner_tx.send(TelemetryEvent::BandwidthError(ProbeError::ThreadPanic(e_str))).await.is_err() {
-                                    tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
-                                }
-                                inner_token.cancel();
-                                break;
-                            }
-                            
-                            inner_bytes_counter.fetch_add(CHUNK_SIZE, Ordering::Relaxed);
-                            yield Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::from_static(&STATIC_PAYLOAD));
+                let stream = async_stream::stream! {
+                    loop {
+                        if stream_token.is_cancelled() || worker_start_time.elapsed() >= duration_limit {
+                            break;
                         }
-                    };
+                        
+                        stream_bytes_counter.fetch_add(CHUNK_SIZE, Ordering::Relaxed);
+                        yield Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::from_static(&STATIC_PAYLOAD));
+                    }
+                };
 
-                    let req = client.post(&url).body(reqwest::Body::wrap_stream(stream)).send();
-                    
-                    tokio::select! {
-                        _ = token.cancelled() => { return; }
-                        res = req => {
-                            match res {
-                                Ok(response) => {
-                                    if !response.status().is_success() {
-                                        if bytes_counter.load(Ordering::Relaxed) == 0 {
-                                            if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                                                tracing::warn!("Cloudflare Rate Limit (Ban) Exceeded during upload test");
-                                                if tx.send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
-                                                    "Cloudflare Rate Limit (Ban) Exceeded during upload.".to_string()
-                                                ))).await.is_err() {
-                                                    tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
-                                                    return;
-                                                }
-                                            } else {
-                                                tracing::error!("HTTP Upload Error: {}", response.status());
-                                                if tx.send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
-                                                    format!("HTTP Upload Error: {}", response.status())
-                                                ))).await.is_err() {
-                                                    tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
-                                                    return;
-                                                }
-                                            }
-                                            token.cancel();
+                let req = client.post(&url).body(reqwest::Body::wrap_stream(stream)).send();
+                
+                tokio::select! {
+                    _ = token.cancelled() => {}
+                    res = req => {
+                        match res {
+                            Ok(response) => {
+                                if !response.status().is_success() && bytes_counter.load(Ordering::Relaxed) == 0 {
+                                    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                                        tracing::warn!("Cloudflare Rate Limit (Ban) Exceeded during upload test");
+                                        if tx.send(TelemetryEvent::BandwidthError(ProbeError::RateLimited(
+                                            "Cloudflare Rate Limit (Ban) Exceeded during upload.".to_string()
+                                        ))).await.is_err() {
+                                            tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
                                         }
-                                        return;
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!("Upload chunk failed: {}", e);
-                                    if tx.send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))).await.is_err() {
-                                        tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
-                                        return;
+                                    } else {
+                                        tracing::error!("HTTP Upload Error: {}", response.status());
+                                        if tx.send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(
+                                            format!("HTTP Upload Error: {}", response.status())
+                                        ))).await.is_err() {
+                                            tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
+                                        }
                                     }
                                     token.cancel();
-                                    break;
                                 }
+                            }
+                            Err(e) => {
+                                tracing::error!("Upload chunk failed: {}", e);
+                                if tx.send(TelemetryEvent::BandwidthError(ProbeError::BandwidthTestFailed(e.to_string()))).await.is_err() {
+                                    tracing::error!("UI channel closed unexpectedly while sending critical error. Shutting down worker.");
+                                }
+                                token.cancel();
                             }
                         }
                     }
@@ -327,24 +288,10 @@ impl BandwidthEngine {
                     }
                 }
                 _ = interval_up.tick() => {
-                    let mut actual_start_time = None;
-                    if stream_started_flag.load(Ordering::Acquire) {
-                        match stream_start_time.lock() {
-                            Ok(lock) => {
-                                actual_start_time = *lock;
-                            }
-                            Err(e) => {
-                                tracing::error!("Stream start time mutex poisoned: {}", e);
-                                up_worker_token.cancel();
-                                return Err(ProbeError::ThreadPanic(e.to_string()));
-                            }
-                        }
-                    }
-                    
-                    let st = actual_start_time.unwrap_or(up_start_time);
+                    let st = up_start_time;
                     let elapsed = st.elapsed().as_secs_f64();
                     
-                    if (actual_start_time.is_some() && elapsed >= duration_limit.as_secs_f64()) || elapsed >= duration_limit.as_secs_f64() + 5.0 {
+                    if elapsed >= duration_limit.as_secs_f64() {
                         is_timeout.store(true, Ordering::Release);
                         up_worker_token.cancel();
                         break;

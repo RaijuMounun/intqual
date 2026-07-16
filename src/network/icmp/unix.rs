@@ -50,7 +50,7 @@ impl IcmpProvider for UnixDgramIcmp {
             }
         };
 
-        let packet = IcmpEchoRequest::new(self.identifier, seq, vec![]);
+        let packet = IcmpEchoRequest::new(self.identifier, seq, &[]);
         let packet_bytes = packet.encode_without_checksum();
 
         if let Err(e) = async_fd.get_ref().send_to(&packet_bytes, &(*target).into()) {
@@ -143,7 +143,7 @@ impl IcmpProvider for UnixDgramIcmp {
             }
         };
 
-        let packet = IcmpEchoRequest::new(self.identifier, seq, vec![]);
+        let packet = IcmpEchoRequest::new(self.identifier, seq, &[]);
         let packet_bytes = packet.encode_without_checksum();
 
         if let Err(e) = async_fd.get_ref().send_to(&packet_bytes, &(*target).into()) {

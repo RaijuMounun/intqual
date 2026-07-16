@@ -8,15 +8,15 @@ const ICMP_CODE_ECHO_REQUEST: u8 = 0;
 /// Represents an ICMP Echo Request Packet.
 /// It strictly follows the 8-byte header structure defined in RFC 792.
 #[derive(Debug)]
-pub struct IcmpEchoRequest {
+pub struct IcmpEchoRequest<'a> {
     pub identifier: u16,
     pub sequence_number: u16,
-    pub payload: Vec<u8>,
+    pub payload: &'a [u8],
 }
 
-impl IcmpEchoRequest {
+impl<'a> IcmpEchoRequest<'a> {
     /// Constructs a new ICMP Echo Request.
-    pub fn new(identifier: u16, sequence_number: u16, payload: Vec<u8>) -> Self {
+    pub fn new(identifier: u16, sequence_number: u16, payload: &'a [u8]) -> Self {
         Self {
             identifier,
             sequence_number,
@@ -59,7 +59,7 @@ impl IcmpEchoRequest {
         buffer[7] = seq_bytes[1];
 
         if !self.payload.is_empty() {
-            buffer[8..].copy_from_slice(&self.payload);
+            buffer[8..].copy_from_slice(self.payload);
         }
 
         buffer

@@ -13,7 +13,7 @@ impl ErrorWidget {
     pub fn render(frame: &mut Frame, area: Rect, app: &AppState) {
         let error_msg = match &app.mode {
             AppMode::Error(msg) => msg.clone(),
-            _ => "Bilinmeyen Hata".to_string(),
+            _ => "Unknown Error".to_string(),
         };
 
         let block = Block::default()
@@ -21,7 +21,7 @@ impl ErrorWidget {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
 
-        let text = format!("\n\nYetki Hatası: Sudo Gereklidir.\n\nDetay:\n{}", error_msg);
+        let text = format!("\n\nPermission Denied: Administrator privileges (sudo) are required.\n\nDetails:\n{}", error_msg);
 
         let paragraph = Paragraph::new(text)
             .style(Style::default().fg(Color::White))
