@@ -6,10 +6,7 @@ use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use tokio::sync::mpsc;
 use reqwest::Client;
 
-pub struct BandwidthEngine;
-
-impl BandwidthEngine {
-    pub async fn test_download(
+pub async fn test_download(
         target_host: &str,
         target_path: &str,
         tx: mpsc::Sender<TelemetryEvent>,
@@ -30,7 +27,7 @@ impl BandwidthEngine {
             }
         };
 
-        let url = format!("https://{}{}", target_host, target_path);
+        let url = Arc::new(format!("https://{}{}", target_host, target_path));
 
         const CONCURRENT_CONNECTIONS: usize = 4;
         let duration_limit = std::time::Duration::from_secs(10);
@@ -57,7 +54,7 @@ impl BandwidthEngine {
                         return; 
                     }
                     
-                    let req = client.get(&url).send().await;
+                    let req = client.get(url.as_str()).send().await;
                     match req {
                         Ok(mut res) => {
                             if !res.status().is_success() {
@@ -195,7 +192,7 @@ impl BandwidthEngine {
         let final_down_mbps = ((final_down_bytes as f64 * 8.0) / 1_000_000.0) / elapsed;
 
         // --- Upload Phase ---
-        let up_url = format!("https://{}/__up", target_host);
+        let up_url = Arc::new(format!("https://{}/__up", target_host));
         let total_up_bytes = Arc::new(AtomicUsize::new(0));
         let up_worker_token = cancel_token.child_token();
         let mut up_workers = Vec::new();
@@ -230,7 +227,7 @@ impl BandwidthEngine {
                     }
                 };
 
-                let req = client.post(&url).body(reqwest::Body::wrap_stream(stream)).send();
+                let req = client.post(url.as_str()).body(reqwest::Body::wrap_stream(stream)).send();
                 
                 tokio::select! {
                     _ = token.cancelled() => {}
@@ -354,4 +351,3 @@ impl BandwidthEngine {
 
         Ok(())
     }
-}

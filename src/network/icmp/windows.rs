@@ -151,7 +151,7 @@ impl IcmpProvider for RawIcmpProvider {
             return Err(ProbeError::Socket(e));
         }
 
-        let target_clone = target.clone();
+        let target_clone = *target;
         let identifier = self.identifier;
         
         let recv_task = tokio::task::spawn_blocking(move || {

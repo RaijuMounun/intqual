@@ -132,7 +132,7 @@ impl super::NetworkEngine for CoreEngine {
                         let token = CancellationToken::new();
                         bw_cancel_token = Some(token.clone());
                         tokio::spawn(async move {
-                            let result = crate::network::bandwidth::BandwidthEngine::test_download(
+                            let result = crate::network::bandwidth::test_download(
                                 "speed.cloudflare.com", 
                                 "/__down?bytes=50000000", 
                                 tx_for_bw.clone(),
