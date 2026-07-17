@@ -1,6 +1,6 @@
 # Maintainer: Eren Keskinoğlu <erenkeskinoglu@outlook.com>
 pkgname=intqual
-pkgver=1.0.8
+pkgver=1.0.9
 pkgrel=1
 pkgdesc="A dual-layer unprivileged network latency analyzer and observability tool (ICMP/TCP)"
 arch=('x86_64' 'aarch64')
