@@ -1,4 +1,4 @@
-.PHONY: all ready
+.PHONY: all ready distribute
 
 all: ready
 
@@ -8,3 +8,6 @@ ready:
 	cargo clippy
 	cargo build
 	updpkgsums
+
+distribute:
+	bash scripts/distribute.sh
