@@ -13,6 +13,7 @@ pub enum TelemetryEvent {
     TracerouteHop(TracerouteHop),
     TracerouteComplete,
     TracerouteError(ProbeError),
+    DnsResolved { ip: String, hostname: Option<String> },
     Fatal(ProbeError),
 }
 

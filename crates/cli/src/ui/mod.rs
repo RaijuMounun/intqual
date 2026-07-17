@@ -27,6 +27,13 @@ pub enum RenderAction {
 }
 
 #[derive(Debug, Clone)]
+pub enum DnsStatus {
+    Resolving,
+    Resolved(String),
+    Failed,
+}
+
+#[derive(Debug, Clone)]
 pub enum AppMode {
     Ping,
     BandwidthTesting(BandwidthProgress),
@@ -102,6 +109,7 @@ pub struct AppState {
     pub active_widget: ActiveWidget,
     pub traceroute_hops: Vec<intqual_core::models::TracerouteHop>,
     pub traceroute_complete: bool,
+    pub dns_status: std::collections::HashMap<String, DnsStatus>,
     pub current_target_ip: String,
 }
 
@@ -128,6 +136,7 @@ impl AppState {
             active_widget: ActiveWidget::Latency,
             traceroute_hops: Vec::new(),
             traceroute_complete: false,
+            dns_status: std::collections::HashMap::new(),
             current_target_ip: String::new(),
         }
     }
@@ -286,7 +295,19 @@ impl AppState {
                 RenderAction::Redraw
             }
             TelemetryEvent::TracerouteHop(hop) => {
+                if let Some(ref ip) = hop.ip_address
+                    && !self.dns_status.contains_key(ip) {
+                        self.dns_status.insert(ip.clone(), DnsStatus::Resolving);
+                }
                 self.traceroute_hops.push(hop);
+                RenderAction::Redraw
+            }
+            TelemetryEvent::DnsResolved { ip, hostname } => {
+                let status = match hostname {
+                    Some(name) => DnsStatus::Resolved(name),
+                    None => DnsStatus::Failed,
+                };
+                self.dns_status.insert(ip, status);
                 RenderAction::Redraw
             }
             TelemetryEvent::TracerouteComplete => {
@@ -369,6 +390,7 @@ pub fn run_app(
                         if !app.current_target_ip.is_empty() {
                             app.mode = AppMode::Traceroute;
                             app.traceroute_hops.clear();
+                            app.dns_status.clear();
                             app.traceroute_complete = false;
                             app.last_error = None;
                             app.active_widget = ActiveWidget::Traceroute;

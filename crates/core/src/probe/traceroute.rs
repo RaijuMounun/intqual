@@ -114,7 +114,7 @@ impl NetworkProbe for TracerouteProbe {
                 }
             };
             
-            if let Err(e) = tx.try_send(TelemetryEvent::TracerouteHop(hop)) {
+            if let Err(e) = tx.try_send(TelemetryEvent::TracerouteHop(hop.clone())) {
                 match e {
                     tokio::sync::mpsc::error::TrySendError::Full(_) => {
                         // UI overloaded, intentionally dropping telemetry frame to prevent memory exhaustion
@@ -124,6 +124,24 @@ impl NetworkProbe for TracerouteProbe {
                         return Ok(());
                     }
                 }
+            }
+
+            if let Some(ip) = hop.ip_address {
+                let tx_dns = tx.clone();
+                tokio::spawn(async move {
+                    let ip_clone = ip.clone();
+                    let hostname = tokio::task::spawn_blocking(move || {
+                        match ip_clone.parse::<std::net::IpAddr>() {
+                            Ok(addr) => dns_lookup::lookup_addr(&addr).ok(),
+                            Err(_) => None,
+                        }
+                    }).await.unwrap_or(None);
+                    
+                    let _ = tx_dns.send(TelemetryEvent::DnsResolved {
+                        ip,
+                        hostname,
+                    }).await;
+                });
             }
 
             if is_dest_reached {

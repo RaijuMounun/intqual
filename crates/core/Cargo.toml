@@ -10,6 +10,7 @@ repository = "https://github.com/RaijuMounun/intqual"
 [dependencies]
 tokio = { workspace = true }
 socket2 = { workspace = true }
+dns-lookup = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 webpki-roots = { workspace = true }

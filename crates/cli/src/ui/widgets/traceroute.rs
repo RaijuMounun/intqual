@@ -16,7 +16,7 @@ impl TracerouteWidget {
         for hop in &app.traceroute_hops {
             let hop_num = hop.hop_number.to_string();
             
-            let (ip_str, rtt_str, style) = if let Some(ip) = &hop.ip_address {
+            let (ip_str, hostname_str, hostname_style, rtt_str, style) = if let Some(ip) = &hop.ip_address {
                 let rtt = if let Some(avg_rtt_ms) = hop.avg_rtt_ms {
                     format!("{:.1} ms", avg_rtt_ms)
                 } else {
@@ -29,19 +29,27 @@ impl TracerouteWidget {
                     Style::default().fg(Color::White)
                 };
 
-                (ip.as_str(), rtt, style)
+                let (h_str, h_style) = match app.dns_status.get(ip) {
+                    Some(crate::ui::DnsStatus::Resolving) => ("Resolving...".to_string(), Style::default().fg(Color::DarkGray)),
+                    Some(crate::ui::DnsStatus::Resolved(name)) => (name.clone(), style),
+                    Some(crate::ui::DnsStatus::Failed) => ("Unknown".to_string(), Style::default().fg(Color::DarkGray)),
+                    None => ("Unknown".to_string(), Style::default().fg(Color::DarkGray)),
+                };
+
+                (ip.as_str(), h_str, h_style, rtt, style)
             } else {
-                ("*", "*".to_string(), Style::default().fg(Color::DarkGray))
+                ("*", "*".to_string(), Style::default().fg(Color::DarkGray), "*".to_string(), Style::default().fg(Color::DarkGray))
             };
 
             rows.push(Row::new(vec![
                 Cell::from(hop_num).style(style),
                 Cell::from(ip_str).style(style),
+                Cell::from(hostname_str).style(hostname_style),
                 Cell::from(rtt_str).style(style),
             ]));
         }
 
-        let header = Row::new(vec!["#", "IP Address", "RTT (ms)"])
+        let header = Row::new(vec!["#", "IP Address", "Hostname", "RTT (ms)"])
             .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
             .bottom_margin(1);
 
@@ -53,7 +61,8 @@ impl TracerouteWidget {
 
         let table = Table::new(rows, [
             Constraint::Length(5),
-            Constraint::Length(25),
+            Constraint::Length(20),
+            Constraint::Percentage(40),
             Constraint::Length(15),
         ])
         .header(header)
