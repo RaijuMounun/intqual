@@ -168,21 +168,3 @@ jobs:
           installers-regex: '\.exe$'
           max-retries: 5
           token: ${{ secrets.WINGET_TOKEN }}
-
-  publish-homebrew:
-    name: Publish to Homebrew
-    runs-on: ubuntu-latest
-    needs: release
-    if: ${{ needs.release.result == 'success' }}
-    steps:
-      - name: Release to Homebrew Tap
-        uses: Justintime50/homebrew-releaser@v1
-        with:
-          homebrew_owner: RaijuMounun
-          homebrew_tap: homebrew-intqual
-          formula_folder: Formula
-          github_token: ${{ secrets.WINGET_TOKEN }}
-          commit_owner: RaijuMounun
-          commit_email: erenkeskinoglu@outlook.com
-          install: 'bin.install "intqual"'
-          test: 'system "#{bin}/intqual", "--version"'
