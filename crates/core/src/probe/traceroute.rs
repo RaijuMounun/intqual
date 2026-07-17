@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -9,7 +8,6 @@ use super::{NetworkProbe, TelemetryEvent};
 use crate::network::icmp::packet::IcmpResponse;
 
 pub struct TracerouteProbe {
-    pub target_ip: Arc<String>,
     pub resolved_addr: SocketAddr,
     pub timeout: Duration,
     pub max_hops: u8,
@@ -17,8 +15,8 @@ pub struct TracerouteProbe {
 }
 
 impl TracerouteProbe {
-    pub fn new(target_ip: Arc<String>, resolved_addr: SocketAddr, timeout: Duration, max_hops: u8, icmp_identifier: u16) -> Self {
-        Self { target_ip, resolved_addr, timeout, max_hops, icmp_identifier }
+    pub fn new(resolved_addr: SocketAddr, timeout: Duration, max_hops: u8, icmp_identifier: u16) -> Self {
+        Self { resolved_addr, timeout, max_hops, icmp_identifier }
     }
 }
 
@@ -34,6 +32,7 @@ impl NetworkProbe for TracerouteProbe {
             let mut last_responder = None;
             let mut is_dest_reached = false;
             let mut fatal_error = None;
+            let mut last_icmp_err = None;
             
             for probe_idx in 0..3 {
                 let seq = (ttl as u16) * 3 + probe_idx; 
@@ -51,11 +50,20 @@ impl NetworkProbe for TracerouteProbe {
                 match hop_result {
                     Ok(result) => {
                         tracing::debug!("Received response for TTL={}: {:?}", ttl, result.response);
-                        let is_dest = match result.response {
-                            IcmpResponse::EchoReply(_) => true,
-                            IcmpResponse::TimeExceeded(_) => false,
-                            IcmpResponse::DestinationUnreachable(_) => true,
-                            IcmpResponse::Unknown { .. } => false,
+                        let (is_dest, icmp_error_msg) = match result.response {
+                            IcmpResponse::EchoReply(r) => {
+                                let _t = r.type_; let _c = r.code;
+                                (true, None)
+                            },
+                            IcmpResponse::TimeExceeded(t) => {
+                                (false, Some(format!("Type: 11, Code: {}", t.code)))
+                            },
+                            IcmpResponse::DestinationUnreachable(d) => {
+                                (true, Some(format!("Type: 3, Code: {}", d.code)))
+                            },
+                            IcmpResponse::Unknown { type_, code } => {
+                                (false, Some(format!("Type: {}, Code: {}", type_, code)))
+                            },
                         };
                         
                         rtt_sum += result.rtt_ms;
@@ -64,6 +72,10 @@ impl NetworkProbe for TracerouteProbe {
                         
                         if is_dest {
                             is_dest_reached = true;
+                        }
+                        
+                        if icmp_error_msg.is_some() {
+                            last_icmp_err = icmp_error_msg;
                         }
                     }
                     Err(ProbeError::IcmpTimeout) => {
@@ -90,6 +102,7 @@ impl NetworkProbe for TracerouteProbe {
                     ip_address: last_responder,
                     avg_rtt_ms: Some(rtt_sum / rtt_count as f64),
                     is_destination: is_dest_reached,
+                    icmp_error: last_icmp_err,
                 }
             } else {
                 TracerouteHop {
@@ -97,6 +110,7 @@ impl NetworkProbe for TracerouteProbe {
                     ip_address: None,
                     avg_rtt_ms: None,
                     is_destination: false,
+                    icmp_error: None,
                 }
             };
             

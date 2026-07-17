@@ -1077,12 +1077,24 @@ dependencies = [
 name = "intqual"
 version = "1.0.9"
 dependencies = [
+ "clap",
+ "crossterm",
+ "intqual-core",
+ "ratatui",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "tui-big-text",
+]
+
+[[package]]
+name = "intqual-core"
+version = "1.0.9"
+dependencies = [
  "anyhow",
  "async-stream",
  "bytes",
- "clap",
- "crossterm",
- "ratatui",
  "reqwest",
  "rustls-pki-types",
  "socket2",
@@ -1091,9 +1103,6 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "tui-big-text",
  "webpki-roots 0.26.11",
 ]
 

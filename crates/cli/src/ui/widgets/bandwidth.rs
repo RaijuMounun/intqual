@@ -4,7 +4,7 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, Paragraph},
 };
 use tui_big_text::{BigText, PixelSize};
-use crate::models::{BandwidthProgress, ProbeError};
+use intqual_core::models::{BandwidthProgress, ProbeError};
 use crate::ui::{AppMode, AppState};
 
 pub struct BandwidthWidget;

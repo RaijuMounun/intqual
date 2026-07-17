@@ -7,3 +7,4 @@ ready:
 	cargo check
 	cargo clippy
 	cargo build
+	updpkgsums

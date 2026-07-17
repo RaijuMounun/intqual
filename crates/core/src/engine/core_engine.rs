@@ -154,7 +154,7 @@ impl super::NetworkEngine for CoreEngine {
                             }
                         });
                     },
-                    EngineCommand::StartTraceroute(target) => {
+                    EngineCommand::StartTraceroute(_target) => {
                         if let Some(token) = active_token.take() {
                             token.cancel(); // Pause ping/tcp while tracerouting
                         }
@@ -166,7 +166,6 @@ impl super::NetworkEngine for CoreEngine {
                         
                         tokio::spawn(async move {
                             let mut probe = crate::probe::traceroute::TracerouteProbe::new(
-                                Arc::new(target), 
                                 addr, 
                                 Duration::from_millis(1000), 
                                 30, 

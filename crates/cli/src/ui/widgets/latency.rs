@@ -4,7 +4,7 @@ use ratatui::{
     symbols,
     widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, LegendPosition, Paragraph, Sparkline},
 };
-use crate::models::ProbeError;
+use intqual_core::models::ProbeError;
 use crate::ui::AppState;
 
 pub struct LatencyDashboardWidget;

@@ -1,10 +1,4 @@
-pub mod models;
-pub mod engine;
-pub mod network;
 pub mod ui;
-pub mod probe;
-pub mod utils;
-
 use clap::Parser;
 
 use tokio::sync::mpsc;
@@ -63,15 +57,15 @@ async fn main() -> Result<(), ()> {
 
     // 2. Establish the telemetry pipeline.
     let (tx, rx) = mpsc::channel(100);
-    let (cmd_tx, cmd_rx) = mpsc::channel::<crate::engine::core_engine::EngineCommand>(10);
+    let (cmd_tx, cmd_rx) = mpsc::channel::<intqual_core::engine::core_engine::EngineCommand>(10);
 
     // 3 & 4. Instantiate and ignite the async engine without dynamic dispatch.
-    use crate::engine::NetworkEngine;
+    use intqual_core::engine::NetworkEngine;
     if cli.mock {
-        let engine = engine::MockEngine;
+        let engine = intqual_core::engine::MockEngine;
         engine.start(tx, cmd_rx).await;
     } else {
-        let engine = engine::CoreEngine::new(cli.target, cli.port, cli.interval, cli.timeout);
+        let engine = intqual_core::engine::CoreEngine::new(cli.target, cli.port, cli.interval, cli.timeout);
         engine.start(tx, cmd_rx).await;
     }
 

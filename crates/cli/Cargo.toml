@@ -1,0 +1,19 @@
+[package]
+name = "intqual"
+version = "1.0.9"
+edition = "2024"
+authors = ["Eren Keskinoğlu <erenkeskinoglu@outlook.com>"]
+description = "A dual-layer asynchronous network latency analyzer and observability tool"
+license = "MIT"
+repository = "https://github.com/RaijuMounun/intqual"
+
+[dependencies]
+intqual-core = { path = "../core", version = "1.0.9" }
+clap = { workspace = true }
+crossterm = { workspace = true }
+ratatui = { workspace = true }
+tui-big-text = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }

@@ -135,27 +135,21 @@ jobs:
       - name: Sync Cargo.toml Version with Tag
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          echo "Extracted version: $VERSION"
+          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" crates/core/Cargo.toml
+          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" crates/cli/Cargo.toml
 
-          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "Current Cargo.toml version: $CURRENT"
+      - name: Publish Core to Crates.io
+        run: cargo publish -p intqual-core --token ${{ secrets.CRATES_TOKEN }} --allow-dirty
 
-          if [ "$CURRENT" != "$VERSION" ]; then
-            sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
-            echo "Updated Cargo.toml to $VERSION"
-          else
-            echo "Cargo.toml already at $VERSION, skipping update"
-          fi
-
-      - name: Publish to Crates.io
-        run: cargo publish --token ${{ secrets.CRATES_TOKEN }} --allow-dirty
+      - name: Publish CLI to Crates.io
+        run: cargo publish -p intqual --token ${{ secrets.CRATES_TOKEN }} --allow-dirty
 
       - name: Commit Version Bump Back to Master
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml
+          git add crates/core/Cargo.toml crates/cli/Cargo.toml
           git diff --cached --quiet && echo "No changes to commit" || {
             git commit -m "chore: bump version to $VERSION [skip ci]"
             git push origin HEAD:refs/heads/master

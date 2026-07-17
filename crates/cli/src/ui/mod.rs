@@ -1,8 +1,7 @@
 pub mod widgets;
 
-use crate::engine::core_engine::EngineCommand;
-use crate::models::{PingMetrics, BandwidthProgress, ProbeError};
-use crate::probe::TelemetryEvent;
+use intqual_core::engine::core_engine::EngineCommand;
+use intqual_core::models::{PingMetrics, BandwidthProgress, ProbeError, TelemetryEvent};
 use crossterm::{
     ExecutableCommand,
     event::{self, Event, KeyCode},
@@ -101,7 +100,7 @@ pub struct AppState {
     pub latest_metric: Option<PingMetrics>,
     
     pub active_widget: ActiveWidget,
-    pub traceroute_hops: Vec<crate::models::TracerouteHop>,
+    pub traceroute_hops: Vec<intqual_core::models::TracerouteHop>,
     pub traceroute_complete: bool,
     pub current_target_ip: String,
 }
@@ -265,8 +264,8 @@ impl AppState {
             }
             TelemetryEvent::Bandwidth(progress) => {
                 self.last_error = None;
-                if let BandwidthProgress::Finished { download_mbps, upload_mbps } = &progress {
-                    self.last_speed_test = Some((*download_mbps, *upload_mbps));
+                if let BandwidthProgress::Finished { download_mbps, upload_mbps } = progress {
+                    self.last_speed_test = Some((download_mbps, upload_mbps));
                 }
                 self.mode = AppMode::BandwidthTesting(progress);
                 self.active_widget = ActiveWidget::Bandwidth;
@@ -351,7 +350,7 @@ pub fn run_app(
             match event::read()? {
                 Event::Key(key) => {
                     if key.code == KeyCode::Char('q') {
-                        if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Stop)
+                        if let Err(e) = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::Stop)
                             && matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
                                 break;
                             }
@@ -359,7 +358,7 @@ pub fn run_app(
                     } else if key.code == KeyCode::Char('s') {
                         if !matches!(app.mode, AppMode::BandwidthTesting(_)) {
                             app.last_error = None;
-                            if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::StartBandwidthTest) {
+                            if let Err(e) = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::StartBandwidthTest) {
                                 if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
                                     break;
                                 }
@@ -373,7 +372,7 @@ pub fn run_app(
                             app.traceroute_complete = false;
                             app.last_error = None;
                             app.active_widget = ActiveWidget::Traceroute;
-                            if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::StartTraceroute(app.current_target_ip.clone())) {
+                            if let Err(e) = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::StartTraceroute(app.current_target_ip.clone())) {
                                 if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
                                     break;
                                 }
@@ -386,7 +385,7 @@ pub fn run_app(
                             app.mode = AppMode::Ping;
                             app.active_widget = ActiveWidget::Latency;
                             app.last_error = None;
-                            if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
+                            if let Err(e) = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::Resume) {
                                 if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
                                     break;
                                 }
@@ -399,7 +398,7 @@ pub fn run_app(
                             app.mode = AppMode::Ping;
                             app.active_widget = ActiveWidget::Latency;
                             app.last_error = None;
-                            if let Err(e) = cmd_tx.try_send(crate::engine::core_engine::EngineCommand::Resume) {
+                            if let Err(e) = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::Resume) {
                                 if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
                                     break;
                                 }

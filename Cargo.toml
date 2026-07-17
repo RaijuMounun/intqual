@@ -1,18 +1,11 @@
-[package]
-name = "intqual"
-version = "1.0.9"
-edition = "2024"
-authors = ["Eren Keskinoğlu <erenkeskinoglu@outlook.com>"]
-description = "A dual-layer asynchronous network latency analyzer and observability tool using unprivileged ICMP & TCP handshakes."
-documentation = "https://github.com/RaijuMounun/intqual"
-homepage = "https://github.com/RaijuMounun/intqual"
-repository = "https://github.com/RaijuMounun/intqual"
-readme = "README.md"
-license = "MIT"
-keywords = ["ping", "network", "tui", "icmp", "diagnostics"]
-categories = ["network-programming", "command-line-utilities"]
+[workspace]
+members = [
+    "crates/core",
+    "crates/cli"
+]
+resolver = "2"
 
-[dependencies]
+[workspace.dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
 crossterm = "0.29.0"
 ratatui = "0.30.1"

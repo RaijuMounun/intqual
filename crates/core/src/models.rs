@@ -1,7 +1,11 @@
+pub use crate::probe::TelemetryEvent;
+
 #[derive(thiserror::Error, Debug)]
 pub enum ProbeError {
     #[error("ICMP Timeout")]
     IcmpTimeout,
+    #[error("ICMP Error: Type {type_}, Code {code}")]
+    IcmpError { type_: u8, code: u8 },
     #[error("TCP Timeout")]
     TcpTimeout,
     #[error("Socket Error: {0}")]
@@ -68,4 +72,5 @@ pub struct TracerouteHop {
     pub ip_address: Option<String>,
     pub avg_rtt_ms: Option<f64>,
     pub is_destination: bool,
+    pub icmp_error: Option<String>,
 }
