@@ -178,6 +178,55 @@ impl BandwidthWidget {
         progress: f64,
         is_finished: bool,
     ) {
+        // Fallback check
+        if area.width < 40 || area.height < 15 {
+            let block = Block::default()
+                .title(format!(" {} (Fallback View) ", phase))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray));
+                
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            let down_color = if phase == "Download" { Color::LightCyan } else { Color::DarkGray };
+            let up_color = if phase == "Upload" { Color::LightMagenta } else { Color::DarkGray };
+
+            let text = vec![
+                Line::from(""),
+                Line::from(vec![Span::styled(format!("Download: {:.1} Mbps", down_val), Style::default().fg(down_color).add_modifier(Modifier::BOLD))]),
+                Line::from(""),
+                Line::from(vec![Span::styled(format!("Upload:   {:.1} Mbps", up_val), Style::default().fg(up_color).add_modifier(Modifier::BOLD))]),
+            ];
+
+            let p = Paragraph::new(text).alignment(Alignment::Center);
+            
+            let center_v = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(6), Constraint::Min(0)])
+                .split(inner);
+                
+            frame.render_widget(p, center_v[1]);
+
+            if is_finished {
+                let msg = Paragraph::new(Text::from(vec![Line::from(vec![Span::styled(
+                    "Test Complete. Press [Enter] to return.",
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                )])]))
+                .alignment(Alignment::Center);
+                
+                let b_layout = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(0), Constraint::Length(1)]).split(inner);
+                frame.render_widget(msg, b_layout[1]);
+            } else {
+                let gauge = Gauge::default()
+                    .gauge_style(Style::default().fg(Color::LightCyan).bg(Color::DarkGray))
+                    .percent(progress.clamp(0.0, 100.0) as u16);
+                let b_layout = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(0), Constraint::Length(1)]).split(inner);
+                frame.render_widget(gauge, b_layout[1]);
+            }
+            return;
+        }
+
+        // Standard large-screen rendering using Bento Grid / Flexbox logic
         let right_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
@@ -199,12 +248,24 @@ impl BandwidthWidget {
         let down_inner = down_block.inner(top_split[0]);
         frame.render_widget(down_block, top_split[0]);
 
+        // Center calculation for Download BigText (8 rows height, ~8 cols per char)
+        let v_down = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(8), Constraint::Min(0)])
+            .split(down_inner);
+            
+        let h_down = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(down_str.len() as u16 * 8), Constraint::Min(0)])
+            .split(v_down[1]);
+
         let down_text = BigText::builder()
             .pixel_size(PixelSize::Full)
             .style(Style::default().fg(down_color))
-            .lines(vec![down_str.into()])
+            .lines(vec![down_str.clone().into()])
             .build();
-        frame.render_widget(down_text, down_inner);
+            
+        frame.render_widget(down_text, h_down[1]);
 
         // Upload block
         let up_str = format!("{:.1}", up_val);
@@ -217,19 +278,36 @@ impl BandwidthWidget {
         let up_inner = up_block.inner(top_split[1]);
         frame.render_widget(up_block, top_split[1]);
 
+        // Center calculation for Upload BigText
+        let v_up = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(8), Constraint::Min(0)])
+            .split(up_inner);
+            
+        let h_up = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(up_str.len() as u16 * 8), Constraint::Min(0)])
+            .split(v_up[1]);
+
         let up_text = BigText::builder()
             .pixel_size(PixelSize::Full)
             .style(Style::default().fg(up_color))
-            .lines(vec![up_str.into()])
+            .lines(vec![up_str.clone().into()])
             .build();
-        frame.render_widget(up_text, up_inner);
+            
+        frame.render_widget(up_text, h_up[1]);
 
-        // Bottom block
+        // Bottom block (Gauge/Status)
         let bottom_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(3), Constraint::Length(1)])
-            .flex(ratatui::layout::Flex::Center)
+            .constraints([Constraint::Min(0), Constraint::Length(3), Constraint::Min(0)])
             .split(right_layout[1]);
+
+        let bottom_inner = bottom_layout[1];
+        let center_gauge_h = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(10), Constraint::Percentage(80), Constraint::Percentage(10)])
+            .split(bottom_inner);
 
         if is_finished {
             let msg = Paragraph::new(Text::from(vec![Line::from(vec![Span::styled(
@@ -237,13 +315,13 @@ impl BandwidthWidget {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             )])]))
             .alignment(Alignment::Center);
-            frame.render_widget(msg, bottom_layout[1]);
+            frame.render_widget(msg, center_gauge_h[1]);
         } else {
             let gauge = Gauge::default()
                 .block(Block::default().borders(Borders::ALL).title(format!(" {} Progress ", phase)))
                 .gauge_style(Style::default().fg(Color::LightCyan).bg(Color::DarkGray))
                 .percent(progress.clamp(0.0, 100.0) as u16);
-            frame.render_widget(gauge, bottom_layout[1]);
+            frame.render_widget(gauge, center_gauge_h[1]);
         }
     }
 }
