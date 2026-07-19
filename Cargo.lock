@@ -1087,7 +1087,7 @@ dependencies = [
 
 [[package]]
 name = "intqual"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -1102,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "intqual-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-stream",
