@@ -65,7 +65,7 @@ git clone https://github.com/RaijuMounun/intqual.git
 cd intqual
 makepkg -si
 ```
-It will be available on the official AUR soon
+It will be available on the official AUR soon.
 
 ### Pre-compiled Binaries
 
