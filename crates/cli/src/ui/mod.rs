@@ -326,6 +326,7 @@ impl AppState {
 pub fn run_app(
     mut rx: mpsc::Receiver<TelemetryEvent>,
     cmd_tx: mpsc::Sender<EngineCommand>,
+    tx: mpsc::Sender<TelemetryEvent>,
 ) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -394,11 +395,63 @@ pub fn run_app(
                             app.traceroute_complete = false;
                             app.last_error = None;
                             app.active_widget = ActiveWidget::Traceroute;
-                            if let Err(e) = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::StartTraceroute(app.current_target_ip.clone())) {
-                                if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
-                                    break;
+                            
+                            let _ = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::Pause);
+                            
+                            let _ = disable_raw_mode();
+                            let _ = stdout().execute(LeaveAlternateScreen);
+                            
+                            let exe_path = std::env::current_exe().unwrap_or_else(|_| "intqual".into());
+                            let output = std::process::Command::new("sudo")
+                                .arg("-E")
+                                .arg(exe_path)
+                                .arg("--worker-mode")
+                                .arg("traceroute")
+                                .arg(app.current_target_ip.clone())
+                                .output();
+                                
+                            let _ = stdout().execute(EnterAlternateScreen);
+                            let _ = enable_raw_mode();
+                            let _ = terminal.clear();
+                            
+                            match output {
+                                Ok(out) if out.status.success() => {
+                                    if let Ok(hops) = serde_json::from_slice::<Vec<intqual_core::models::TracerouteHop>>(&out.stdout) {
+                                        for hop in hops {
+                                            app.traceroute_hops.push(hop.clone());
+                                            
+                                            if let Some(ip) = hop.ip_address {
+                                                if !app.dns_status.contains_key(&ip) {
+                                                    app.dns_status.insert(ip.clone(), DnsStatus::Resolving);
+                                                }
+                                                let tx_dns = tx.clone();
+                                                let ip_clone = ip.clone();
+                                                tokio::runtime::Handle::current().spawn(async move {
+                                                    let hostname = tokio::task::spawn_blocking(move || {
+                                                        match ip_clone.parse::<std::net::IpAddr>() {
+                                                            Ok(addr) => dns_lookup::lookup_addr(&addr).ok(),
+                                                            Err(_) => None,
+                                                        }
+                                                    }).await.unwrap_or(None);
+                                                    
+                                                    let _ = tx_dns.send(TelemetryEvent::DnsResolved {
+                                                        ip,
+                                                        hostname,
+                                                    }).await;
+                                                });
+                                            }
+                                        }
+                                        app.traceroute_complete = true;
+                                    } else {
+                                        app.last_error = Some("Failed to parse worker output".to_string());
+                                    }
                                 }
-                                tracing::error!("Failed to send EngineCommand: {}", e);
+                                Ok(out) => {
+                                    app.last_error = Some(format!("Worker failed: {}", String::from_utf8_lossy(&out.stderr)));
+                                }
+                                Err(e) => {
+                                    app.last_error = Some(format!("Failed to start worker: {}", e));
+                                }
                             }
                         }
                     } else if key.code == KeyCode::Esc {

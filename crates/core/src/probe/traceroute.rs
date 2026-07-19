@@ -126,23 +126,8 @@ impl NetworkProbe for TracerouteProbe {
                 }
             }
 
-            if let Some(ip) = hop.ip_address {
-                let tx_dns = tx.clone();
-                tokio::spawn(async move {
-                    let ip_clone = ip.clone();
-                    let hostname = tokio::task::spawn_blocking(move || {
-                        match ip_clone.parse::<std::net::IpAddr>() {
-                            Ok(addr) => dns_lookup::lookup_addr(&addr).ok(),
-                            Err(_) => None,
-                        }
-                    }).await.unwrap_or(None);
-                    
-                    let _ = tx_dns.send(TelemetryEvent::DnsResolved {
-                        ip,
-                        hostname,
-                    }).await;
-                });
-            }
+            // DNS resolution is handled asynchronously by the parent process (TUI)
+            // in accordance with the Principle of Least Privilege.
 
             if is_dest_reached {
                 break;

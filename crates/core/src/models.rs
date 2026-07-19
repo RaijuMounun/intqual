@@ -66,7 +66,9 @@ pub enum BandwidthProgress {
     Failed(String),
 }
 
-#[derive(Debug, Clone)]
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracerouteHop {
     pub hop_number: u8,
     pub ip_address: Option<String>,
