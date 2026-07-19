@@ -24,6 +24,8 @@ pub enum ProbeError {
     ThreadPanic(String),
     #[error("Packet Build/Decode Error: {0}")]
     PacketError(String),
+    #[error("IPC Communication Error: {0}")]
+    IpcError(String),
 }
 
 /// The canonical data contract between the Network Engine (Producer) and the UI (Consumer).

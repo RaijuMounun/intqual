@@ -95,11 +95,12 @@ async fn main() -> Result<(), ()> {
             }
         });
 
-        let mut hops = Vec::new();
         while let Some(event) = rx.recv().await {
             match event {
                 intqual_core::models::TelemetryEvent::TracerouteHop(hop) => {
-                    hops.push(hop);
+                    if let Ok(json) = serde_json::to_string(&hop) {
+                        println!("{}", json);
+                    }
                 }
                 intqual_core::models::TelemetryEvent::TracerouteComplete => {
                     break;
@@ -112,9 +113,6 @@ async fn main() -> Result<(), ()> {
             }
         }
 
-        if let Ok(json) = serde_json::to_string(&hops) {
-            println!("{}", json);
-        }
         std::process::exit(0);
     }
 

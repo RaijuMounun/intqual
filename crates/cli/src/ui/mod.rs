@@ -402,57 +402,98 @@ pub fn run_app(
                             let _ = stdout().execute(LeaveAlternateScreen);
                             
                             let exe_path = std::env::current_exe().unwrap_or_else(|_| "intqual".into());
-                            let output = std::process::Command::new("sudo")
-                                .arg("-E")
-                                .arg(exe_path)
-                                .arg("--worker-mode")
-                                .arg("traceroute")
-                                .arg(app.current_target_ip.clone())
-                                .output();
+                            
+                            // Synchronously authenticate via sudo to use standard terminal prompts
+                            let _ = std::process::Command::new("sudo").arg("-v").status();
                                 
                             let _ = stdout().execute(EnterAlternateScreen);
                             let _ = enable_raw_mode();
                             let _ = terminal.clear();
                             
-                            match output {
-                                Ok(out) if out.status.success() => {
-                                    if let Ok(hops) = serde_json::from_slice::<Vec<intqual_core::models::TracerouteHop>>(&out.stdout) {
-                                        for hop in hops {
-                                            app.traceroute_hops.push(hop.clone());
-                                            
-                                            if let Some(ip) = hop.ip_address {
-                                                if !app.dns_status.contains_key(&ip) {
-                                                    app.dns_status.insert(ip.clone(), DnsStatus::Resolving);
-                                                }
-                                                let tx_dns = tx.clone();
+                            let target_ip = app.current_target_ip.clone();
+                            let tx_worker = tx.clone();
+                            
+                            tokio::runtime::Handle::current().spawn(async move {
+                                use tokio::io::{AsyncBufReadExt, BufReader};
+                                use std::process::Stdio;
+                                use intqual_core::models::ProbeError;
+
+                                let mut child = match tokio::process::Command::new("sudo")
+                                    .arg("-E")
+                                    .arg(exe_path)
+                                    .arg("--worker-mode")
+                                    .arg("traceroute")
+                                    .arg(&target_ip)
+                                    .stdout(Stdio::piped())
+                                    .stderr(Stdio::piped())
+                                    .spawn()
+                                {
+                                    Ok(c) => c,
+                                    Err(e) => {
+                                        let _ = tx_worker.send(TelemetryEvent::TracerouteError(ProbeError::IpcError(format!("Failed to spawn worker: {}", e)))).await;
+                                        return;
+                                    }
+                                };
+
+                                let stdout_pipe = match child.stdout.take() {
+                                    Some(s) => s,
+                                    None => {
+                                        let _ = tx_worker.send(TelemetryEvent::TracerouteError(ProbeError::IpcError("Failed to capture stdout".to_string()))).await;
+                                        return;
+                                    }
+                                };
+
+                                let mut reader = BufReader::new(stdout_pipe).lines();
+                                
+                                while let Ok(Some(line)) = reader.next_line().await {
+                                    match serde_json::from_str::<intqual_core::models::TracerouteHop>(&line) {
+                                        Ok(hop) => {
+                                            if let Some(ip) = &hop.ip_address {
                                                 let ip_clone = ip.clone();
-                                                tokio::runtime::Handle::current().spawn(async move {
+                                                let tx_dns = tx_worker.clone();
+                                                tokio::spawn(async move {
+                                                    let ip_for_closure = ip_clone.clone();
                                                     let hostname = tokio::task::spawn_blocking(move || {
-                                                        match ip_clone.parse::<std::net::IpAddr>() {
+                                                        match ip_for_closure.parse::<std::net::IpAddr>() {
                                                             Ok(addr) => dns_lookup::lookup_addr(&addr).ok(),
                                                             Err(_) => None,
                                                         }
                                                     }).await.unwrap_or(None);
                                                     
                                                     let _ = tx_dns.send(TelemetryEvent::DnsResolved {
-                                                        ip,
+                                                        ip: ip_clone,
                                                         hostname,
                                                     }).await;
                                                 });
                                             }
+                                            let _ = tx_worker.send(TelemetryEvent::TracerouteHop(hop)).await;
                                         }
-                                        app.traceroute_complete = true;
-                                    } else {
-                                        app.last_error = Some("Failed to parse worker output".to_string());
+                                        Err(e) => {
+                                            let _ = tx_worker.send(TelemetryEvent::TracerouteError(ProbeError::IpcError(format!("Parse error: {} for line: {}", e, line)))).await;
+                                        }
                                     }
                                 }
-                                Ok(out) => {
-                                    app.last_error = Some(format!("Worker failed: {}", String::from_utf8_lossy(&out.stderr)));
+
+                                match child.wait().await {
+                                    Ok(status) if status.success() => {
+                                        let _ = tx_worker.send(TelemetryEvent::TracerouteComplete).await;
+                                    }
+                                    Ok(status) => {
+                                        let mut err_msg = format!("Worker exited with status: {}", status);
+                                        if let Some(mut stderr) = child.stderr.take() {
+                                            use tokio::io::AsyncReadExt;
+                                            let mut s = String::new();
+                                            if stderr.read_to_string(&mut s).await.is_ok() && !s.is_empty() {
+                                                err_msg.push_str(&format!(" - Stderr: {}", s));
+                                            }
+                                        }
+                                        let _ = tx_worker.send(TelemetryEvent::TracerouteError(ProbeError::IpcError(err_msg))).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = tx_worker.send(TelemetryEvent::TracerouteError(ProbeError::IpcError(format!("Failed to wait on worker: {}", e)))).await;
+                                    }
                                 }
-                                Err(e) => {
-                                    app.last_error = Some(format!("Failed to start worker: {}", e));
-                                }
-                            }
+                            });
                         }
                     } else if key.code == KeyCode::Esc {
                         if matches!(app.mode, AppMode::BandwidthTesting(_) | AppMode::Traceroute | AppMode::Error(_)) {
