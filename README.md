@@ -58,13 +58,14 @@ brew install RaijuMounun/intqual/intqual
 
 ### Arch Linux (AUR)
 
-If you are on an Arch-based distribution, clone the repository and build the package locally via `makepkg`. It will be available on the official AUR soon:
+If you are on an Arch-based distribution, clone the repository and build the package locally via `makepkg`:
 
 ```bash
 git clone https://github.com/RaijuMounun/intqual.git
 cd intqual
 makepkg -si
 ```
+It will be available on the official AUR soon
 
 ### Pre-compiled Binaries
 
