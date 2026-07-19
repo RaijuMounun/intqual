@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # a) Senkronizasyon
-echo "Syncing with master..."
-git pull origin master
+echo "Syncing with remote..."
+git pull origin HEAD
 
 # b) Versiyon Tespiti
 VERSION=$(grep '^version = ' crates/cli/Cargo.toml | awk -F'"' '{print $2}')
@@ -83,7 +83,7 @@ cd "$TAP_DIR"
 git add Formula/intqual.rb
 if ! git diff --cached --quiet; then
     git commit -m "chore: release v$VERSION"
-    git push origin master
+    git push origin HEAD
 else
     echo "No changes in Formula/intqual.rb"
 fi
