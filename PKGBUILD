@@ -10,7 +10,7 @@ depends=('gcc-libs')
 makedepends=('cargo' 'cmake')
 options=('!lto')
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/RaijuMounun/${pkgname}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('ddaff6834f7deed508200fce5512dfdf37ca6bf0bfabe5d19ebd371be2d3a392')
+sha256sums=('bf5768013d9d69f8dc36a73c391e400c2725f6c1b90c5fb4bc825d39e9cd12cb')
 
 build() {
   cd "${pkgname}-${pkgver}"
