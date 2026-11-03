@@ -123,7 +123,7 @@ async fn main() -> Result<(), ()> {
     // 3 & 4. Instantiate and ignite the async engine without dynamic dispatch.
     use intqual_core::engine::NetworkEngine;
     if cli.mock {
-        let engine = intqual_core::engine::MockEngine;
+        let engine = intqual_core::engine::MockEngine::default();
         engine.start(tx.clone(), cmd_rx).await;
     } else {
         let engine =

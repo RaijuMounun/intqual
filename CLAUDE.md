@@ -16,7 +16,7 @@ cargo run -p intqual -- --help
 
 - The repo is rustfmt-clean; keep `cargo fmt --all -- --check` passing.
 - `cargo run -p intqual` (the TUI) sends real network traffic and writes `intqual.log` to the
-  current directory. `--mock` currently hangs before the UI appears (see assessment §5.2).
+  current directory. `--mock` shows simulated ping/TCP data with no network traffic.
 - On Windows, ICMP ping and traceroute need Administrator; TCP and the speed test do not.
 - Clippy on Windows does not compile `#[cfg(unix)]` files (`icmp/unix.rs`, `icmp/unix_raw.rs`).
 
