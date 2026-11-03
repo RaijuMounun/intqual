@@ -114,6 +114,7 @@ impl super::NetworkEngine for CoreEngine {
             let token = CancellationToken::new();
             let mut active_token: Option<CancellationToken> = Some(token.clone());
             let mut bw_cancel_token: Option<CancellationToken> = None;
+            let mut trace_cancel_token: Option<CancellationToken> = None;
             Self::spawn_probes(
                 self.target_ip.clone(),
                 resolved_addr,
@@ -135,6 +136,9 @@ impl super::NetworkEngine for CoreEngine {
                         if let Some(token) = bw_cancel_token.take() {
                             token.cancel();
                         }
+                        if let Some(token) = trace_cancel_token.take() {
+                            token.cancel();
+                        }
                         if active_token.is_none() {
                             let new_token = CancellationToken::new();
                             active_token = Some(new_token.clone());
@@ -154,6 +158,9 @@ impl super::NetworkEngine for CoreEngine {
                             token.cancel();
                         }
                         if let Some(token) = bw_cancel_token.take() {
+                            token.cancel();
+                        }
+                        if let Some(token) = trace_cancel_token.take() {
                             token.cancel();
                         }
                         break;
@@ -201,37 +208,12 @@ impl super::NetworkEngine for CoreEngine {
                             token.cancel(); // Pause ping/tcp while tracerouting
                         }
 
-                        let tx_traceroute = tx.clone();
+                        if let Some(token) = trace_cancel_token.take() {
+                            token.cancel();
+                        }
                         let token = CancellationToken::new();
-                        let identifier = icmp_identifier;
-                        let addr = resolved_addr;
-
-                        tokio::spawn(async move {
-                            let mut probe = crate::probe::traceroute::TracerouteProbe::new(
-                                addr,
-                                Duration::from_millis(1000),
-                                30,
-                                identifier,
-                            );
-
-                            if let Err(e) = crate::probe::NetworkProbe::run(
-                                &mut probe,
-                                tx_traceroute.clone(),
-                                token,
-                            )
-                            .await
-                            {
-                                tracing::error!(
-                                    "Traceroute probe encountered fatal error: {:?}",
-                                    e
-                                );
-                                if tx_traceroute.send(TelemetryEvent::Fatal(e)).await.is_err() {
-                                    tracing::error!(
-                                        "UI channel is dead. Cannot send fatal telemetry event. Shutting down engine worker."
-                                    );
-                                }
-                            }
-                        });
+                        trace_cancel_token = Some(token.clone());
+                        Self::spawn_traceroute(resolved_addr, icmp_identifier, tx.clone(), token);
                     }
                 }
             }
@@ -283,5 +265,106 @@ impl CoreEngine {
                 }
             }
         });
+    }
+
+    /// Runs a traceroute in this process. Hops are forwarded to the UI, each responder
+    /// gets a reverse-DNS lookup, and probe failures are reported as `TracerouteError`
+    /// so the traceroute screen shows them instead of the fatal error page.
+    fn spawn_traceroute(
+        resolved_addr: SocketAddr,
+        icmp_identifier: u16,
+        tx: mpsc::Sender<TelemetryEvent>,
+        token: CancellationToken,
+    ) {
+        let (probe_tx, mut probe_rx) = mpsc::channel(100);
+        let probe_token = token.clone();
+        let probe_task = tokio::spawn(async move {
+            let mut probe = crate::probe::traceroute::TracerouteProbe::new(
+                resolved_addr,
+                Duration::from_millis(1000),
+                30,
+                icmp_identifier,
+            );
+            probe.run(probe_tx, probe_token).await
+        });
+
+        tokio::spawn(async move {
+            while let Some(event) = probe_rx.recv().await {
+                // A cancelled run must not leak hops into the next screen.
+                if token.is_cancelled() {
+                    return;
+                }
+                if let TelemetryEvent::TracerouteHop(hop) = &event
+                    && let Some(ip) = hop.ip_address.clone()
+                {
+                    let tx_dns = tx.clone();
+                    tokio::spawn(async move {
+                        let hostname = reverse_dns(&ip).await;
+                        let _ = tx_dns
+                            .send(TelemetryEvent::DnsResolved { ip, hostname })
+                            .await;
+                    });
+                }
+                if tx.send(event).await.is_err() {
+                    return;
+                }
+            }
+
+            let error = match probe_task.await {
+                Ok(Ok(())) => return,
+                Ok(Err(e)) => e,
+                Err(e) => ProbeError::ThreadPanic(format!("Traceroute task panicked: {}", e)),
+            };
+            tracing::error!("Traceroute probe failed: {}", error);
+            if !token.is_cancelled() {
+                let _ = tx.send(TelemetryEvent::TracerouteError(error)).await;
+            }
+        });
+    }
+}
+
+async fn reverse_dns(ip: &str) -> Option<String> {
+    let addr: std::net::IpAddr = ip.parse().ok()?;
+    tokio::task::spawn_blocking(move || dns_lookup::lookup_addr(&addr).ok())
+        .await
+        .ok()
+        .flatten()
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use crate::engine::NetworkEngine;
+
+    /// Loopback only and no admin: the ICMP Helper API answers 127.0.0.1 in-process.
+    #[tokio::test]
+    async fn traceroute_to_loopback_runs_in_process() {
+        let (tx, mut rx) = mpsc::channel(100);
+        let (cmd_tx, cmd_rx) = mpsc::channel(10);
+        CoreEngine::new("127.0.0.1".to_string(), 9, 500, 500)
+            .start(tx, cmd_rx)
+            .await;
+        cmd_tx.send(EngineCommand::Pause).await.unwrap();
+        cmd_tx
+            .send(EngineCommand::StartTraceroute("127.0.0.1".to_string()))
+            .await
+            .unwrap();
+
+        let mut hops = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Some(TelemetryEvent::TracerouteHop(hop))) => hops.push(hop),
+                Ok(Some(TelemetryEvent::TracerouteComplete)) => break,
+                Ok(Some(TelemetryEvent::TracerouteError(e))) => panic!("traceroute failed: {e}"),
+                Ok(Some(TelemetryEvent::Fatal(e))) => panic!("fatal: {e}"),
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => panic!("traceroute did not complete; hops: {hops:?}"),
+            }
+        }
+        assert_eq!(hops.len(), 1);
+        assert!(hops[0].is_destination);
+        assert_eq!(hops[0].ip_address.as_deref(), Some("127.0.0.1"));
+        cmd_tx.send(EngineCommand::Stop).await.unwrap();
     }
 }

@@ -352,7 +352,8 @@ impl AppState {
 pub fn run_app(
     mut rx: mpsc::Receiver<TelemetryEvent>,
     cmd_tx: mpsc::Sender<EngineCommand>,
-    tx: mpsc::Sender<TelemetryEvent>,
+    // Only the Unix sudo worker needs to send telemetry from the UI side.
+    #[cfg_attr(windows, allow(unused_variables))] tx: mpsc::Sender<TelemetryEvent>,
 ) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -427,103 +428,23 @@ pub fn run_app(
                             let _ = cmd_tx
                                 .try_send(intqual_core::engine::core_engine::EngineCommand::Pause);
 
-                            let _ = disable_raw_mode();
-                            let _ = stdout().execute(LeaveAlternateScreen);
-
-                            let exe_path =
-                                std::env::current_exe().unwrap_or_else(|_| "intqual".into());
-
-                            // Synchronously authenticate via sudo to use standard terminal prompts
-                            let _ = std::process::Command::new("sudo").arg("-v").status();
-
-                            let _ = stdout().execute(EnterAlternateScreen);
-                            let _ = enable_raw_mode();
-                            let _ = terminal.clear();
-
-                            let target_ip = app.current_target_ip.clone();
-                            let tx_worker = tx.clone();
-
-                            tokio::runtime::Handle::current().spawn(async move {
-                                use tokio::io::{AsyncBufReadExt, BufReader};
-                                use std::process::Stdio;
-                                use intqual_core::models::ProbeError;
-
-                                let mut child = match tokio::process::Command::new("sudo")
-                                    .arg("-E")
-                                    .arg(exe_path)
-                                    .arg("--worker-mode")
-                                    .arg("traceroute")
-                                    .arg(&target_ip)
-                                    .stdout(Stdio::piped())
-                                    .stderr(Stdio::piped())
-                                    .spawn()
-                                {
-                                    Ok(c) => c,
-                                    Err(e) => {
-                                        let _ = tx_worker.send(TelemetryEvent::TracerouteError(ProbeError::IpcError(format!("Failed to spawn worker: {}", e)))).await;
-                                        return;
-                                    }
-                                };
-
-                                let stdout_pipe = match child.stdout.take() {
-                                    Some(s) => s,
-                                    None => {
-                                        let _ = tx_worker.send(TelemetryEvent::TracerouteError(ProbeError::IpcError("Failed to capture stdout".to_string()))).await;
-                                        return;
-                                    }
-                                };
-
-                                let mut reader = BufReader::new(stdout_pipe).lines();
-
-                                while let Ok(Some(line)) = reader.next_line().await {
-                                    match serde_json::from_str::<intqual_core::models::TracerouteHop>(&line) {
-                                        Ok(hop) => {
-                                            if let Some(ip) = &hop.ip_address {
-                                                let ip_clone = ip.clone();
-                                                let tx_dns = tx_worker.clone();
-                                                tokio::spawn(async move {
-                                                    let ip_for_closure = ip_clone.clone();
-                                                    let hostname = tokio::task::spawn_blocking(move || {
-                                                        match ip_for_closure.parse::<std::net::IpAddr>() {
-                                                            Ok(addr) => dns_lookup::lookup_addr(&addr).ok(),
-                                                            Err(_) => None,
-                                                        }
-                                                    }).await.unwrap_or(None);
-
-                                                    let _ = tx_dns.send(TelemetryEvent::DnsResolved {
-                                                        ip: ip_clone,
-                                                        hostname,
-                                                    }).await;
-                                                });
-                                            }
-                                            let _ = tx_worker.send(TelemetryEvent::TracerouteHop(hop)).await;
-                                        }
-                                        Err(e) => {
-                                            let _ = tx_worker.send(TelemetryEvent::TracerouteError(ProbeError::IpcError(format!("Parse error: {} for line: {}", e, line)))).await;
-                                        }
-                                    }
+                            // Windows uses the ICMP Helper API, which needs no elevation,
+                            // so the engine runs the traceroute in-process there.
+                            #[cfg(windows)]
+                            if let Err(e) = cmd_tx.try_send(EngineCommand::StartTraceroute(
+                                app.current_target_ip.clone(),
+                            )) {
+                                if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
+                                    break;
                                 }
-
-                                match child.wait().await {
-                                    Ok(status) if status.success() => {
-                                        let _ = tx_worker.send(TelemetryEvent::TracerouteComplete).await;
-                                    }
-                                    Ok(status) => {
-                                        let mut err_msg = format!("Worker exited with status: {}", status);
-                                        if let Some(mut stderr) = child.stderr.take() {
-                                            use tokio::io::AsyncReadExt;
-                                            let mut s = String::new();
-                                            if stderr.read_to_string(&mut s).await.is_ok() && !s.is_empty() {
-                                                err_msg.push_str(&format!(" - Stderr: {}", s));
-                                            }
-                                        }
-                                        let _ = tx_worker.send(TelemetryEvent::TracerouteError(ProbeError::IpcError(err_msg))).await;
-                                    }
-                                    Err(e) => {
-                                        let _ = tx_worker.send(TelemetryEvent::TracerouteError(ProbeError::IpcError(format!("Failed to wait on worker: {}", e)))).await;
-                                    }
-                                }
-                            });
+                                tracing::error!("Failed to send EngineCommand: {}", e);
+                            }
+                            #[cfg(not(windows))]
+                            start_traceroute_worker(
+                                &mut terminal,
+                                app.current_target_ip.clone(),
+                                tx.clone(),
+                            );
                         }
                     } else if key.code == KeyCode::Esc {
                         if matches!(
@@ -626,4 +547,132 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
     frame.render_widget(top_bar, screen_layout[0]);
 
     app.active_widget.render(frame, screen_layout[1], app);
+}
+
+/// Runs traceroute in a `sudo` child process (`--worker-mode traceroute`) and forwards
+/// its JSON-line hops to the UI. Raw ICMP needs root on Unix, and the worker keeps the
+/// TUI itself unprivileged.
+#[cfg(not(windows))]
+fn start_traceroute_worker(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    target_ip: String,
+    tx_worker: mpsc::Sender<TelemetryEvent>,
+) {
+    let _ = disable_raw_mode();
+    let _ = stdout().execute(LeaveAlternateScreen);
+
+    let exe_path = std::env::current_exe().unwrap_or_else(|_| "intqual".into());
+
+    // Synchronously authenticate via sudo to use standard terminal prompts
+    let _ = std::process::Command::new("sudo").arg("-v").status();
+
+    let _ = stdout().execute(EnterAlternateScreen);
+    let _ = enable_raw_mode();
+    let _ = terminal.clear();
+
+    tokio::runtime::Handle::current().spawn(async move {
+        use intqual_core::models::ProbeError;
+        use std::process::Stdio;
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let mut child = match tokio::process::Command::new("sudo")
+            .arg("-E")
+            .arg(exe_path)
+            .arg("--worker-mode")
+            .arg("traceroute")
+            .arg(&target_ip)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx_worker
+                    .send(TelemetryEvent::TracerouteError(ProbeError::IpcError(
+                        format!("Failed to spawn worker: {}", e),
+                    )))
+                    .await;
+                return;
+            }
+        };
+
+        let stdout_pipe = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                let _ = tx_worker
+                    .send(TelemetryEvent::TracerouteError(ProbeError::IpcError(
+                        "Failed to capture stdout".to_string(),
+                    )))
+                    .await;
+                return;
+            }
+        };
+
+        let mut reader = BufReader::new(stdout_pipe).lines();
+
+        while let Ok(Some(line)) = reader.next_line().await {
+            match serde_json::from_str::<intqual_core::models::TracerouteHop>(&line) {
+                Ok(hop) => {
+                    if let Some(ip) = &hop.ip_address {
+                        let ip_clone = ip.clone();
+                        let tx_dns = tx_worker.clone();
+                        tokio::spawn(async move {
+                            let ip_for_closure = ip_clone.clone();
+                            let hostname = tokio::task::spawn_blocking(move || {
+                                match ip_for_closure.parse::<std::net::IpAddr>() {
+                                    Ok(addr) => dns_lookup::lookup_addr(&addr).ok(),
+                                    Err(_) => None,
+                                }
+                            })
+                            .await
+                            .unwrap_or(None);
+
+                            let _ = tx_dns
+                                .send(TelemetryEvent::DnsResolved {
+                                    ip: ip_clone,
+                                    hostname,
+                                })
+                                .await;
+                        });
+                    }
+                    let _ = tx_worker.send(TelemetryEvent::TracerouteHop(hop)).await;
+                }
+                Err(e) => {
+                    let _ = tx_worker
+                        .send(TelemetryEvent::TracerouteError(ProbeError::IpcError(
+                            format!("Parse error: {} for line: {}", e, line),
+                        )))
+                        .await;
+                }
+            }
+        }
+
+        match child.wait().await {
+            Ok(status) if status.success() => {
+                let _ = tx_worker.send(TelemetryEvent::TracerouteComplete).await;
+            }
+            Ok(status) => {
+                let mut err_msg = format!("Worker exited with status: {}", status);
+                if let Some(mut stderr) = child.stderr.take() {
+                    use tokio::io::AsyncReadExt;
+                    let mut s = String::new();
+                    if stderr.read_to_string(&mut s).await.is_ok() && !s.is_empty() {
+                        err_msg.push_str(&format!(" - Stderr: {}", s));
+                    }
+                }
+                let _ = tx_worker
+                    .send(TelemetryEvent::TracerouteError(ProbeError::IpcError(
+                        err_msg,
+                    )))
+                    .await;
+            }
+            Err(e) => {
+                let _ = tx_worker
+                    .send(TelemetryEvent::TracerouteError(ProbeError::IpcError(
+                        format!("Failed to wait on worker: {}", e),
+                    )))
+                    .await;
+            }
+        }
+    });
 }
