@@ -43,7 +43,7 @@ process that prints `TracerouteHop` as JSON lines.
 ## Conventions observed
 
 - Errors: library returns `Result<_, ProbeError>`; failures are data (`Result<f64, ProbeError>`
-  inside events), not panics. No `unwrap()`/`expect()` in the code — keep it that way.
+  inside events), not panics. No `unwrap()`/`expect()` outside `#[cfg(test)]` — keep it that way.
 - Every error path logs with `tracing` (`error!`/`warn!`) before returning.
 - Telemetry uses `try_send` and drops the frame on `Full`; stop the task on `Closed`.
   Fatal errors use `send().await`.

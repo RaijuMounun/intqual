@@ -73,7 +73,7 @@ impl<'a> IcmpEchoRequest<'a> {
         let mut i = 0;
 
         // Sum adjacent bytes as 16-bit words
-        while i < buffer.len() - 1 {
+        while i + 1 < buffer.len() {
             let word = (buffer[i] as u32) << 8 | (buffer[i + 1] as u32);
             sum += word;
             i += 2;
@@ -281,5 +281,147 @@ impl IcmpResponse {
         );
 
         Ok((identifier, sequence))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ID: u16 = 0xBEEF;
+    const SEQ: u16 = 42;
+
+    /// Builds an ICMP error message (Time Exceeded / Dest Unreachable) quoting our original
+    /// Echo Request: 8-byte ICMP header + IPv4 header (`ihl` words) + original 8-byte ICMP header.
+    fn error_packet(icmp_type: u8, code: u8, ihl: u8, protocol: u8) -> Vec<u8> {
+        let mut buf = vec![icmp_type, code, 0, 0, 0, 0, 0, 0];
+        let mut ip = vec![0u8; ihl as usize * 4];
+        ip[0] = 0x40 | ihl;
+        ip[9] = protocol;
+        buf.extend(ip);
+        buf.extend(IcmpEchoRequest::new(ID, SEQ, &[]).encode());
+        buf
+    }
+
+    #[test]
+    fn encode_writes_header_fields_big_endian() {
+        let bytes = IcmpEchoRequest::new(0x1234, 0x5678, &[0xAA]).encode();
+        assert_eq!(bytes.len(), 9);
+        assert_eq!(bytes[0], ICMP_TYPE_ECHO_REQUEST);
+        assert_eq!(bytes[1], ICMP_CODE_ECHO_REQUEST);
+        assert_eq!(&bytes[4..8], &[0x12, 0x34, 0x56, 0x78]);
+        assert_eq!(bytes[8], 0xAA);
+    }
+
+    #[test]
+    fn encoded_packet_checksum_verifies_to_zero() {
+        // RFC 1071: summing a packet including its checksum field yields 0.
+        for payload in [&[][..], &[1, 2, 3][..], &[0xFF; 32][..]] {
+            let bytes = IcmpEchoRequest::new(ID, SEQ, payload).encode();
+            assert_eq!(
+                IcmpEchoRequest::calculate_checksum(&bytes),
+                0,
+                "payload {payload:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn checksum_matches_rfc1071_example() {
+        // RFC 1071 section 3 example data; the one's-complement sum is 0xDDF2.
+        let data = [0x00, 0x01, 0xF2, 0x03, 0xF4, 0xF5, 0xF6, 0xF7];
+        assert_eq!(IcmpEchoRequest::calculate_checksum(&data), !0xDDF2u16);
+    }
+
+    #[test]
+    fn checksum_handles_odd_and_empty_buffers() {
+        assert_eq!(IcmpEchoRequest::calculate_checksum(&[0x01]), !0x0100u16);
+        assert_eq!(IcmpEchoRequest::calculate_checksum(&[]), 0xFFFF);
+    }
+
+    #[test]
+    fn encode_without_checksum_leaves_checksum_zero() {
+        let bytes = IcmpEchoRequest::new(ID, SEQ, &[]).encode_without_checksum();
+        assert_eq!(&bytes[2..4], &[0, 0]);
+    }
+
+    #[test]
+    fn echo_reply_decode_reads_id_and_sequence() {
+        let mut bytes = IcmpEchoRequest::new(ID, SEQ, &[]).encode();
+        bytes[0] = ICMP_TYPE_ECHO_REPLY;
+        let reply = IcmpEchoReply::decode(&bytes).unwrap();
+        assert_eq!((reply.identifier, reply.sequence_number), (ID, SEQ));
+    }
+
+    #[test]
+    fn echo_reply_decode_rejects_short_and_wrong_type() {
+        assert!(IcmpEchoReply::decode(&[0; 7]).is_err());
+        let request = IcmpEchoRequest::new(ID, SEQ, &[]).encode();
+        assert!(IcmpEchoReply::decode(&request).is_err());
+    }
+
+    #[test]
+    fn strip_ipv4_header_removes_header_by_ihl() {
+        let mut buf = vec![0u8; 24];
+        buf[0] = 0x46; // IPv4, IHL = 6 words = 24 bytes
+        buf.extend([ICMP_TYPE_ECHO_REPLY, 0]);
+        assert_eq!(
+            IcmpResponse::strip_ipv4_header(&buf),
+            &[ICMP_TYPE_ECHO_REPLY, 0]
+        );
+    }
+
+    #[test]
+    fn strip_ipv4_header_keeps_bare_icmp() {
+        let icmp = [ICMP_TYPE_ECHO_REPLY, 0, 0, 0];
+        assert_eq!(IcmpResponse::strip_ipv4_header(&icmp), &icmp);
+        assert_eq!(IcmpResponse::strip_ipv4_header(&[]), &[] as &[u8]);
+    }
+
+    #[test]
+    fn decode_time_exceeded_extracts_original_id_and_sequence() {
+        let packet = error_packet(ICMP_TYPE_TIME_EXCEEDED, 0, 5, 1);
+        match IcmpResponse::decode(&packet).unwrap() {
+            IcmpResponse::TimeExceeded(t) => {
+                assert_eq!(
+                    (t.code, t.original_identifier, t.original_sequence),
+                    (0, ID, SEQ)
+                );
+            }
+            other => panic!("expected TimeExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_dest_unreachable_honors_ip_options() {
+        // IHL 6 = IPv4 header with 4 bytes of options.
+        let packet = error_packet(ICMP_TYPE_DEST_UNREACHABLE, 3, 6, 1);
+        match IcmpResponse::decode(&packet).unwrap() {
+            IcmpResponse::DestinationUnreachable(d) => {
+                assert_eq!(
+                    (d.code, d.original_identifier, d.original_sequence),
+                    (3, ID, SEQ)
+                );
+            }
+            other => panic!("expected DestinationUnreachable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_error_body_rejects_non_icmp_or_truncated() {
+        let udp = error_packet(ICMP_TYPE_TIME_EXCEEDED, 0, 5, 17);
+        assert!(IcmpResponse::decode(&udp).is_err());
+
+        let full = error_packet(ICMP_TYPE_TIME_EXCEEDED, 0, 5, 1);
+        assert!(IcmpResponse::decode(&full[..full.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn decode_unknown_type_is_not_an_error() {
+        let packet = [5, 1, 0, 0, 0, 0, 0, 0]; // ICMP Redirect
+        assert!(matches!(
+            IcmpResponse::decode(&packet),
+            Ok(IcmpResponse::Unknown { type_: 5, code: 1 })
+        ));
     }
 }
