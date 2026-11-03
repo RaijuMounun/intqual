@@ -305,3 +305,76 @@ impl LatencyDashboardWidget {
         frame.render_widget(jitter_sparkline, right_layout[1]);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use intqual_core::models::PingMetrics;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn render_to_string(app: &AppState) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(150, 40)).unwrap();
+        terminal
+            .draw(|frame| LatencyDashboardWidget::render(frame, frame.area(), app))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    fn seqs(run: &[(f64, f64)]) -> Vec<f64> {
+        run.iter().map(|p| p.0).collect()
+    }
+
+    #[test]
+    fn runs_split_at_sequence_gaps() {
+        let points = [(1.0, 10.0), (2.0, 11.0), (4.0, 12.0), (5.0, 13.0)];
+        let split: Vec<_> = runs(&points).map(seqs).collect();
+        assert_eq!(split, vec![vec![1.0, 2.0], vec![4.0, 5.0]]);
+    }
+
+    #[test]
+    fn consecutive_points_form_one_run() {
+        let points = [(1.0, 10.0), (2.0, 11.0), (3.0, 12.0)];
+        assert_eq!(runs(&points).count(), 1);
+        assert_eq!(runs(&[]).count(), 0);
+    }
+
+    #[test]
+    fn missing_protocol_result_shows_waiting_not_timeout() {
+        let mut app = AppState::new();
+        app.latest_metric = Some(PingMetrics {
+            sequence_number: 1,
+            target_ip: "192.0.2.1".into(),
+            icmp_ping: Some(Ok(12.0)),
+            tcp_ping: None,
+            timestamp: 0,
+        });
+        let screen = render_to_string(&app);
+        assert!(screen.contains("12.0 ms"));
+        assert!(screen.contains("Waiting..."));
+        assert!(!screen.contains("Timeout"));
+    }
+
+    #[test]
+    fn non_loss_errors_get_their_own_line() {
+        let mut app = AppState::new();
+        app.latest_metric = Some(PingMetrics {
+            sequence_number: 1,
+            target_ip: "192.0.2.1".into(),
+            icmp_ping: None,
+            tcp_ping: None,
+            timestamp: 0,
+        });
+        assert!(!render_to_string(&app).contains("Errors (not loss)"));
+
+        app.tcp_stats.error_count = 3;
+        let screen = render_to_string(&app);
+        assert!(screen.contains("Errors (not loss)"));
+        assert!(screen.contains("3 probes"));
+    }
+}
