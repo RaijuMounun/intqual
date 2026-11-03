@@ -63,13 +63,17 @@ async fn main() -> Result<(), ()> {
         && mode == "traceroute"
     {
         let addr_string = format!("{}:{}", cli.target, cli.port);
+        // The parent reads stderr when the worker exits non-zero, so every failure
+        // must be printed there, not only logged.
         let resolved_addr = match tokio::net::lookup_host(&addr_string).await {
             Ok(mut addrs) => addrs.next().unwrap_or_else(|| {
                 tracing::error!("Worker DNS error: no addresses found");
+                eprintln!("DNS error: no addresses found for {}", cli.target);
                 std::process::exit(1);
             }),
             Err(e) => {
                 tracing::error!("Worker DNS error: {}", e);
+                eprintln!("DNS error: {}", e);
                 std::process::exit(1);
             }
         };
@@ -88,11 +92,9 @@ async fn main() -> Result<(), ()> {
             icmp_identifier,
         );
 
-        tokio::spawn(async move {
+        let probe_task = tokio::spawn(async move {
             use intqual_core::probe::NetworkProbe;
-            if let Err(e) = probe.run(tx, token).await {
-                tracing::error!("Worker traceroute error: {}", e);
-            }
+            probe.run(tx, token).await
         });
 
         while let Some(event) = rx.recv().await {
@@ -107,13 +109,28 @@ async fn main() -> Result<(), ()> {
                 }
                 intqual_core::models::TelemetryEvent::Fatal(e) => {
                     tracing::error!("Fatal error in worker: {}", e);
+                    eprintln!("{}", e);
                     std::process::exit(1);
                 }
                 _ => {}
             }
         }
 
-        std::process::exit(0);
+        // The channel also closes when the probe fails, so the probe's own result
+        // decides the exit code; otherwise a failed traceroute looked "complete".
+        match probe_task.await {
+            Ok(Ok(())) => std::process::exit(0),
+            Ok(Err(e)) => {
+                tracing::error!("Worker traceroute error: {}", e);
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+            Err(e) => {
+                tracing::error!("Worker traceroute task panicked: {}", e);
+                eprintln!("Traceroute task panicked: {}", e);
+                std::process::exit(1);
+            }
+        }
     }
 
     // 2. Establish the telemetry pipeline.
