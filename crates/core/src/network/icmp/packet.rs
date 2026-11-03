@@ -1,3 +1,7 @@
+// The wire-format encoder/decoder is used by the Unix socket providers; Windows uses the
+// ICMP Helper API instead, so here only the shared response types and tests use it.
+#![cfg_attr(windows, allow(dead_code))]
+
 use crate::models::ProbeError;
 
 /// ICMP Type for an Echo Request (Ping)

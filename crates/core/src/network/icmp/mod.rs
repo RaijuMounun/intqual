@@ -21,7 +21,7 @@ pub type DefaultIcmpProvider = unix::UnixDgramIcmp;
 pub type TracerouteIcmpProvider = unix_raw::RawIcmpProvider;
 
 #[cfg(target_os = "windows")]
-pub type DefaultIcmpProvider = windows::RawIcmpProvider;
+pub type DefaultIcmpProvider = windows::IcmpApiProvider;
 
 #[cfg(target_os = "windows")]
-pub type TracerouteIcmpProvider = windows::RawIcmpProvider;
+pub type TracerouteIcmpProvider = windows::IcmpApiProvider;
