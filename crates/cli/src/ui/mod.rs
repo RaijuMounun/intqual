@@ -1,21 +1,17 @@
 pub mod widgets;
 
-use intqual_core::engine::core_engine::EngineCommand;
-use intqual_core::models::{PingMetrics, BandwidthProgress, ProbeError, TelemetryEvent};
 use crossterm::{
     ExecutableCommand,
     event::{self, Event, KeyCode},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{
-    layout::Alignment,
-    prelude::*,
-    widgets::Paragraph,
-};
+use intqual_core::engine::core_engine::EngineCommand;
+use intqual_core::models::{BandwidthProgress, PingMetrics, ProbeError, TelemetryEvent};
+use ratatui::{layout::Alignment, prelude::*, widgets::Paragraph};
+use std::collections::VecDeque;
 use std::io::{Result, stdout};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use std::collections::VecDeque;
 use widgets::ActiveWidget;
 
 const HISTORY_SIZE: usize = 100;
@@ -48,7 +44,7 @@ pub struct NetworkStats {
     pub min_ping: f64,
     pub max_ping: f64,
     pub current_jitter: f64,
-    
+
     pub total_count: u64,
     pub loss_count: u64,
     pub jitter_sum: f64,
@@ -62,9 +58,13 @@ impl NetworkStats {
         match result {
             Ok(ping) => {
                 let p = *ping;
-                if p > self.max_ping { self.max_ping = p; }
-                if self.min_ping == 0.0 || p < self.min_ping { self.min_ping = p; }
-                
+                if p > self.max_ping {
+                    self.max_ping = p;
+                }
+                if self.min_ping == 0.0 || p < self.min_ping {
+                    self.min_ping = p;
+                }
+
                 if let Some(last) = self.last_ping {
                     self.current_jitter = (p - last).abs();
                     self.jitter_sum += self.current_jitter;
@@ -82,7 +82,7 @@ impl NetworkStats {
                 tracing::warn!("UI Parsing fallback triggered: {:?}", e);
             }
         }
-        
+
         if self.total_count > 0 {
             self.loss_pct = (self.loss_count as f64 / self.total_count as f64) * 100.0;
         }
@@ -94,7 +94,7 @@ pub struct AppState {
     pub mode: AppMode,
     pub last_speed_test: Option<(f64, f64)>, // (Down, Up)
     pub last_error: Option<String>,
-    
+
     // Push-based stats and chart data
     pub icmp_stats: NetworkStats,
     pub tcp_stats: NetworkStats,
@@ -102,10 +102,10 @@ pub struct AppState {
     pub tcp_data: VecDeque<(f64, f64)>,
     pub jitter_history: VecDeque<u64>,
     pub chart_max_ping: f64,
-    
+
     // For single-frame display
     pub latest_metric: Option<PingMetrics>,
-    
+
     pub active_widget: ActiveWidget,
     pub traceroute_hops: Vec<intqual_core::models::TracerouteHop>,
     pub traceroute_complete: bool,
@@ -163,47 +163,61 @@ impl AppState {
     fn update_chart_max_ping(&mut self) {
         let mut max = 50.0;
         for &(_, p) in &self.icmp_data {
-            if p > max { max = p; }
+            if p > max {
+                max = p;
+            }
         }
         for &(_, p) in &self.tcp_data {
-            if p > max { max = p; }
+            if p > max {
+                max = p;
+            }
         }
         self.chart_max_ping = max;
     }
 
-    pub fn handle_event(&mut self, event: TelemetryEvent, _cmd_tx: &mpsc::Sender<EngineCommand>) -> RenderAction {
+    pub fn handle_event(
+        &mut self,
+        event: TelemetryEvent,
+        _cmd_tx: &mpsc::Sender<EngineCommand>,
+    ) -> RenderAction {
         match event {
-            TelemetryEvent::Ping { sequence_number, target_ip, result, timestamp } => {
+            TelemetryEvent::Ping {
+                sequence_number,
+                target_ip,
+                result,
+                timestamp,
+            } => {
                 if self.current_target_ip != target_ip {
                     self.current_target_ip = target_ip.clone();
                 }
                 if sequence_number > self.latest_sequence {
                     self.latest_sequence = sequence_number;
                 }
-                
+
                 self.icmp_stats.update(&result);
-                
+
                 let p_val = match &result {
                     Ok(p) => *p,
                     Err(e) => {
                         tracing::warn!("UI Parsing fallback triggered: {:?}", e);
                         0.0
-                    },
+                    }
                 };
                 Self::push_chart_data(&mut self.icmp_data, (sequence_number as f64, p_val));
-                
+
                 if result.is_ok() {
                     let j = self.icmp_stats.current_jitter.round() as u64;
                     Self::push_chart_data(&mut self.jitter_history, j);
-                    
+
                     if let Ok(ping) = result
-                        && ping > self.chart_max_ping {
-                            self.chart_max_ping = ping;
+                        && ping > self.chart_max_ping
+                    {
+                        self.chart_max_ping = ping;
                     }
                 } else {
                     Self::push_chart_data(&mut self.jitter_history, 0);
                 }
-                
+
                 // If this packet fell out of the window and it was the max, recompute
                 if self.icmp_data.len() == HISTORY_SIZE {
                     self.update_chart_max_ping();
@@ -223,33 +237,39 @@ impl AppState {
                         timestamp,
                     });
                 }
-                
+
                 RenderAction::Redraw
             }
-            TelemetryEvent::Tcp { sequence_number, target_ip, result, timestamp } => {
+            TelemetryEvent::Tcp {
+                sequence_number,
+                target_ip,
+                result,
+                timestamp,
+            } => {
                 if self.current_target_ip != target_ip {
                     self.current_target_ip = target_ip.clone();
                 }
                 if sequence_number > self.latest_sequence {
                     self.latest_sequence = sequence_number;
                 }
-                
+
                 self.tcp_stats.update(&result);
-                
+
                 let p_val = match &result {
                     Ok(p) => *p,
                     Err(e) => {
                         tracing::warn!("UI Parsing fallback triggered: {:?}", e);
                         0.0
-                    },
+                    }
                 };
                 Self::push_chart_data(&mut self.tcp_data, (sequence_number as f64, p_val));
-                
+
                 if let Ok(ping) = result
-                    && ping > self.chart_max_ping {
-                        self.chart_max_ping = ping;
+                    && ping > self.chart_max_ping
+                {
+                    self.chart_max_ping = ping;
                 }
-                
+
                 if self.tcp_data.len() == HISTORY_SIZE {
                     self.update_chart_max_ping();
                 }
@@ -268,12 +288,16 @@ impl AppState {
                         timestamp,
                     });
                 }
-                
+
                 RenderAction::Redraw
             }
             TelemetryEvent::Bandwidth(progress) => {
                 self.last_error = None;
-                if let BandwidthProgress::Finished { download_mbps, upload_mbps } = progress {
+                if let BandwidthProgress::Finished {
+                    download_mbps,
+                    upload_mbps,
+                } = progress
+                {
                     self.last_speed_test = Some((download_mbps, upload_mbps));
                 }
                 self.mode = AppMode::BandwidthTesting(progress);
@@ -282,7 +306,8 @@ impl AppState {
             }
             TelemetryEvent::BandwidthError(err) => {
                 if matches!(self.mode, AppMode::BandwidthTesting(_)) {
-                    self.mode = AppMode::BandwidthTesting(BandwidthProgress::Failed(err.to_string()));
+                    self.mode =
+                        AppMode::BandwidthTesting(BandwidthProgress::Failed(err.to_string()));
                     RenderAction::Redraw
                 } else {
                     RenderAction::Skip
@@ -296,8 +321,9 @@ impl AppState {
             }
             TelemetryEvent::TracerouteHop(hop) => {
                 if let Some(ref ip) = hop.ip_address
-                    && !self.dns_status.contains_key(ip) {
-                        self.dns_status.insert(ip.clone(), DnsStatus::Resolving);
+                    && !self.dns_status.contains_key(ip)
+                {
+                    self.dns_status.insert(ip.clone(), DnsStatus::Resolving);
                 }
                 self.traceroute_hops.push(hop);
                 RenderAction::Redraw
@@ -372,10 +398,12 @@ pub fn run_app(
             match event::read()? {
                 Event::Key(key) => {
                     if key.code == KeyCode::Char('q') {
-                        if let Err(e) = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::Stop)
-                            && matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
-                                break;
-                            }
+                        if let Err(e) =
+                            cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::Stop)
+                            && matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_))
+                        {
+                            break;
+                        }
                         break;
                     } else if key.code == KeyCode::Char('s') {
                         if !matches!(app.mode, AppMode::BandwidthTesting(_)) {
@@ -395,24 +423,26 @@ pub fn run_app(
                             app.traceroute_complete = false;
                             app.last_error = None;
                             app.active_widget = ActiveWidget::Traceroute;
-                            
-                            let _ = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::Pause);
-                            
+
+                            let _ = cmd_tx
+                                .try_send(intqual_core::engine::core_engine::EngineCommand::Pause);
+
                             let _ = disable_raw_mode();
                             let _ = stdout().execute(LeaveAlternateScreen);
-                            
-                            let exe_path = std::env::current_exe().unwrap_or_else(|_| "intqual".into());
-                            
+
+                            let exe_path =
+                                std::env::current_exe().unwrap_or_else(|_| "intqual".into());
+
                             // Synchronously authenticate via sudo to use standard terminal prompts
                             let _ = std::process::Command::new("sudo").arg("-v").status();
-                                
+
                             let _ = stdout().execute(EnterAlternateScreen);
                             let _ = enable_raw_mode();
                             let _ = terminal.clear();
-                            
+
                             let target_ip = app.current_target_ip.clone();
                             let tx_worker = tx.clone();
-                            
+
                             tokio::runtime::Handle::current().spawn(async move {
                                 use tokio::io::{AsyncBufReadExt, BufReader};
                                 use std::process::Stdio;
@@ -444,7 +474,7 @@ pub fn run_app(
                                 };
 
                                 let mut reader = BufReader::new(stdout_pipe).lines();
-                                
+
                                 while let Ok(Some(line)) = reader.next_line().await {
                                     match serde_json::from_str::<intqual_core::models::TracerouteHop>(&line) {
                                         Ok(hop) => {
@@ -459,7 +489,7 @@ pub fn run_app(
                                                             Err(_) => None,
                                                         }
                                                     }).await.unwrap_or(None);
-                                                    
+
                                                     let _ = tx_dns.send(TelemetryEvent::DnsResolved {
                                                         ip: ip_clone,
                                                         hostname,
@@ -496,12 +526,17 @@ pub fn run_app(
                             });
                         }
                     } else if key.code == KeyCode::Esc {
-                        if matches!(app.mode, AppMode::BandwidthTesting(_) | AppMode::Traceroute | AppMode::Error(_)) {
+                        if matches!(
+                            app.mode,
+                            AppMode::BandwidthTesting(_) | AppMode::Traceroute | AppMode::Error(_)
+                        ) {
                             app.reset_ping_state();
                             app.mode = AppMode::Ping;
                             app.active_widget = ActiveWidget::Latency;
                             app.last_error = None;
-                            if let Err(e) = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::Resume) {
+                            if let Err(e) = cmd_tx
+                                .try_send(intqual_core::engine::core_engine::EngineCommand::Resume)
+                            {
                                 if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
                                     break;
                                 }
@@ -509,17 +544,26 @@ pub fn run_app(
                             }
                         }
                     } else if key.code == KeyCode::Enter
-                        && matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..}) | AppMode::BandwidthTesting(BandwidthProgress::Failed(_)) | AppMode::Traceroute | AppMode::Error(_)) {
-                            app.reset_ping_state();
-                            app.mode = AppMode::Ping;
-                            app.active_widget = ActiveWidget::Latency;
-                            app.last_error = None;
-                            if let Err(e) = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::Resume) {
-                                if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
-                                    break;
-                                }
-                                tracing::error!("Failed to send EngineCommand: {}", e);
+                        && matches!(
+                            app.mode,
+                            AppMode::BandwidthTesting(BandwidthProgress::Finished { .. })
+                                | AppMode::BandwidthTesting(BandwidthProgress::Failed(_))
+                                | AppMode::Traceroute
+                                | AppMode::Error(_)
+                        )
+                    {
+                        app.reset_ping_state();
+                        app.mode = AppMode::Ping;
+                        app.active_widget = ActiveWidget::Latency;
+                        app.last_error = None;
+                        if let Err(e) = cmd_tx
+                            .try_send(intqual_core::engine::core_engine::EngineCommand::Resume)
+                        {
+                            if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
+                                break;
                             }
+                            tracing::error!("Failed to send EngineCommand: {}", e);
+                        }
                     }
                 }
                 Event::Resize(_, _) => {
@@ -545,8 +589,18 @@ fn draw_ui(frame: &mut Frame, app: &AppState) {
         .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(area);
 
-    let is_testing = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..}));
-    let is_finished_or_failed = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..} | BandwidthProgress::Failed(_)));
+    let is_testing = matches!(
+        app.mode,
+        AppMode::BandwidthTesting(
+            BandwidthProgress::Downloading { .. } | BandwidthProgress::Uploading { .. }
+        )
+    );
+    let is_finished_or_failed = matches!(
+        app.mode,
+        AppMode::BandwidthTesting(
+            BandwidthProgress::Finished { .. } | BandwidthProgress::Failed(_)
+        )
+    );
     let is_traceroute = matches!(app.mode, AppMode::Traceroute);
 
     let is_error = matches!(app.mode, AppMode::Error(_));

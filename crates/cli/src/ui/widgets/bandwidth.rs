@@ -1,11 +1,11 @@
+use crate::ui::{AppMode, AppState};
+use intqual_core::models::{BandwidthProgress, ProbeError};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     prelude::*,
     widgets::{Block, Borders, Gauge, Paragraph},
 };
 use tui_big_text::{BigText, PixelSize};
-use intqual_core::models::{BandwidthProgress, ProbeError};
-use crate::ui::{AppMode, AppState};
 
 pub struct BandwidthWidget;
 
@@ -16,27 +16,44 @@ impl BandwidthWidget {
             .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
             .split(area);
 
-        let is_testing = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Downloading {..} | BandwidthProgress::Uploading {..}));
-        let is_finished = matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Finished {..}));
+        let is_testing = matches!(
+            app.mode,
+            AppMode::BandwidthTesting(
+                BandwidthProgress::Downloading { .. } | BandwidthProgress::Uploading { .. }
+            )
+        );
+        let is_finished = matches!(
+            app.mode,
+            AppMode::BandwidthTesting(BandwidthProgress::Finished { .. })
+        );
 
         let mut stats_lines = Vec::new();
 
         if is_testing {
             stats_lines.push(Line::from(vec![Span::styled(
                 "[TESTING BANDWIDTH...]",
-                Style::default().fg(Color::LightCyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::BOLD),
             )]));
             stats_lines.push(Line::from(""));
         } else if is_finished {
             stats_lines.push(Line::from(vec![Span::styled(
                 "[TEST FINISHED]",
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
             )]));
             stats_lines.push(Line::from(""));
-        } else if matches!(app.mode, AppMode::BandwidthTesting(BandwidthProgress::Failed(_))) {
+        } else if matches!(
+            app.mode,
+            AppMode::BandwidthTesting(BandwidthProgress::Failed(_))
+        ) {
             stats_lines.push(Line::from(vec![Span::styled(
                 "[TEST FAILED]",
-                Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD),
             )]));
             stats_lines.push(Line::from(""));
         }
@@ -48,12 +65,33 @@ impl BandwidthWidget {
             let mut perm_denied = false;
             let (icmp_str, icmp_color_override) = match &metric.icmp_ping {
                 Ok(ms) => (format!("{:.1} ms", ms), None),
-                Err(ProbeError::IcmpTimeout) => ("Timeout".to_string(), Some(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+                Err(ProbeError::IcmpTimeout) => (
+                    "Timeout".to_string(),
+                    Some(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ),
                 Err(ProbeError::PermissionDenied) => {
                     perm_denied = true;
-                    ("Perm Denied".to_string(), Some(Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD)))
-                },
-                Err(e) => (e.to_string(), Some(Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD))),
+                    (
+                        "Perm Denied".to_string(),
+                        Some(
+                            Style::default()
+                                .fg(Color::LightRed)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    )
+                }
+                Err(e) => (
+                    e.to_string(),
+                    Some(
+                        Style::default()
+                            .fg(Color::LightRed)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ),
             };
             let tcp_str = match &metric.tcp_ping {
                 Ok(ms) => format!("{:.1} ms", ms),
@@ -71,41 +109,97 @@ impl BandwidthWidget {
             }
 
             if perm_denied {
-                stats_lines.push(Line::from(vec![Span::styled(" NO RAW SOCKET PERMISSIONS ", Style::default().bg(Color::Red).fg(Color::White).add_modifier(Modifier::BOLD))]));
+                stats_lines.push(Line::from(vec![Span::styled(
+                    " NO RAW SOCKET PERMISSIONS ",
+                    Style::default()
+                        .bg(Color::Red)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )]));
                 stats_lines.push(Line::from(""));
             }
 
-            stats_lines.push(Line::from(vec![Span::styled(" Target:", Style::default().fg(Color::DarkGray))]));
-            stats_lines.push(Line::from(vec![Span::styled(format!(" {}", metric.target_ip), Style::default().add_modifier(Modifier::BOLD))]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                " Target:",
+                Style::default().fg(Color::DarkGray),
+            )]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                format!(" {}", metric.target_ip),
+                Style::default().add_modifier(Modifier::BOLD),
+            )]));
             stats_lines.push(Line::from(""));
-            stats_lines.push(Line::from(vec![Span::styled(" ICMP Ping (Network):", Style::default().fg(Color::DarkGray))]));
-            stats_lines.push(Line::from(vec![Span::styled(format!(" {}", icmp_str), icmp_color)]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                " ICMP Ping (Network):",
+                Style::default().fg(Color::DarkGray),
+            )]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                format!(" {}", icmp_str),
+                icmp_color,
+            )]));
             stats_lines.push(Line::from(""));
-            stats_lines.push(Line::from(vec![Span::styled(" TCP Ping (App Layer):", Style::default().fg(Color::DarkGray))]));
-            stats_lines.push(Line::from(vec![Span::styled(format!(" {}", tcp_str), tcp_color)]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                " TCP Ping (App Layer):",
+                Style::default().fg(Color::DarkGray),
+            )]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                format!(" {}", tcp_str),
+                tcp_color,
+            )]));
             stats_lines.push(Line::from(""));
-            stats_lines.push(Line::from(vec![Span::styled(" Jitter (Stability):", Style::default().fg(Color::DarkGray))]));
-            stats_lines.push(Line::from(vec![Span::styled(format!(" {:.1} ms", jitter), jitter_style)]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                " Jitter (Stability):",
+                Style::default().fg(Color::DarkGray),
+            )]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                format!(" {:.1} ms", jitter),
+                jitter_style,
+            )]));
             stats_lines.push(Line::from(""));
-            stats_lines.push(Line::from(vec![Span::styled(" Pkt Loss (Survival):", Style::default().fg(Color::DarkGray))]));
-            stats_lines.push(Line::from(vec![Span::styled(format!(" {:.1}%", loss_pct), loss_style)]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                " Pkt Loss (Survival):",
+                Style::default().fg(Color::DarkGray),
+            )]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                format!(" {:.1}%", loss_pct),
+                loss_style,
+            )]));
             stats_lines.push(Line::from(""));
-            stats_lines.push(Line::from(vec![Span::styled(format!(" Seq ID: {}", metric.sequence_number), Style::default().fg(Color::DarkGray))]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                format!(" Seq ID: {}", metric.sequence_number),
+                Style::default().fg(Color::DarkGray),
+            )]));
         } else {
             stats_lines.push(Line::from("  Waiting for data..."));
         }
 
         if let Some((down, up)) = app.last_speed_test {
             stats_lines.push(Line::from(""));
-            stats_lines.push(Line::from(vec![Span::styled(" Last Speed Test:", Style::default().fg(Color::DarkGray))]));
-            stats_lines.push(Line::from(vec![Span::styled(format!(" Down: {:.1} Mbps", down), Style::default().fg(Color::LightCyan))]));
-            stats_lines.push(Line::from(vec![Span::styled(format!(" Up:   {:.1} Mbps", up), Style::default().fg(Color::LightMagenta))]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                " Last Speed Test:",
+                Style::default().fg(Color::DarkGray),
+            )]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                format!(" Down: {:.1} Mbps", down),
+                Style::default().fg(Color::LightCyan),
+            )]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                format!(" Up:   {:.1} Mbps", up),
+                Style::default().fg(Color::LightMagenta),
+            )]));
         }
 
         if let Some(ref err) = app.last_error {
             stats_lines.push(Line::from(""));
-            stats_lines.push(Line::from(vec![Span::styled(" Bandwidth Error:", Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD))]));
-            stats_lines.push(Line::from(vec![Span::styled(format!(" {}", err), Style::default().fg(Color::LightRed))]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                " Bandwidth Error:",
+                Style::default()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD),
+            )]));
+            stats_lines.push(Line::from(vec![Span::styled(
+                format!(" {}", err),
+                Style::default().fg(Color::LightRed),
+            )]));
         }
 
         let stats_block = Paragraph::new(Text::from(stats_lines)).block(
@@ -119,13 +213,39 @@ impl BandwidthWidget {
 
         if let AppMode::BandwidthTesting(ref progress) = app.mode {
             match progress {
-                BandwidthProgress::Downloading { current_mbps, progress_pct } => {
-                    Self::render_bandwidth_panel(frame, main_layout[1], "Download", *current_mbps, 0.0, *progress_pct, false);
+                BandwidthProgress::Downloading {
+                    current_mbps,
+                    progress_pct,
+                } => {
+                    Self::render_bandwidth_panel(
+                        frame,
+                        main_layout[1],
+                        "Download",
+                        *current_mbps,
+                        0.0,
+                        *progress_pct,
+                        false,
+                    );
                 }
-                BandwidthProgress::Uploading { download_result_mbps, current_mbps, progress_pct } => {
-                    Self::render_bandwidth_panel(frame, main_layout[1], "Upload", *download_result_mbps, *current_mbps, *progress_pct, false);
+                BandwidthProgress::Uploading {
+                    download_result_mbps,
+                    current_mbps,
+                    progress_pct,
+                } => {
+                    Self::render_bandwidth_panel(
+                        frame,
+                        main_layout[1],
+                        "Upload",
+                        *download_result_mbps,
+                        *current_mbps,
+                        *progress_pct,
+                        false,
+                    );
                 }
-                BandwidthProgress::Finished { download_mbps, upload_mbps } => {
+                BandwidthProgress::Finished {
+                    download_mbps,
+                    upload_mbps,
+                } => {
                     Self::render_bandwidth_panel(
                         frame,
                         main_layout[1],
@@ -139,29 +259,45 @@ impl BandwidthWidget {
                 BandwidthProgress::Failed(msg) => {
                     let layout = Layout::default()
                         .direction(Direction::Vertical)
-                        .constraints([Constraint::Percentage(30), Constraint::Length(5), Constraint::Percentage(30)])
+                        .constraints([
+                            Constraint::Percentage(30),
+                            Constraint::Length(5),
+                            Constraint::Percentage(30),
+                        ])
                         .split(main_layout[1]);
-                        
+
                     let error_text = format!("\n{}\n", msg);
                     let err_p = Paragraph::new(error_text)
-                        .block(Block::default().title(" Bandwidth Test Failed ").borders(Borders::ALL).border_style(Style::default().fg(Color::Red)))
-                        .style(Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD))
+                        .block(
+                            Block::default()
+                                .title(" Bandwidth Test Failed ")
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(Color::Red)),
+                        )
+                        .style(
+                            Style::default()
+                                .fg(Color::LightRed)
+                                .add_modifier(Modifier::BOLD),
+                        )
                         .alignment(Alignment::Center)
                         .wrap(ratatui::widgets::Wrap { trim: true });
-                        
+
                     frame.render_widget(err_p, layout[1]);
-                    
-                    let help_msg = Paragraph::new(Text::from(vec![Line::from(vec![Span::styled(
-                        "Press [Enter] to return to Ping View.",
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                    )])]))
-                    .alignment(Alignment::Center);
-                    
+
+                    let help_msg =
+                        Paragraph::new(Text::from(vec![Line::from(vec![Span::styled(
+                            "Press [Enter] to return to Ping View.",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        )])]))
+                        .alignment(Alignment::Center);
+
                     let help_layout = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([Constraint::Length(2), Constraint::Length(1)])
                         .split(layout[2]);
-                        
+
                     frame.render_widget(help_msg, help_layout[1]);
                 }
             }
@@ -184,43 +320,69 @@ impl BandwidthWidget {
                 .title(format!(" {} (Fallback View) ", phase))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray));
-                
+
             let inner = block.inner(area);
             frame.render_widget(block, area);
 
-            let down_color = if phase == "Download" { Color::LightCyan } else { Color::DarkGray };
-            let up_color = if phase == "Upload" { Color::LightMagenta } else { Color::DarkGray };
+            let down_color = if phase == "Download" {
+                Color::LightCyan
+            } else {
+                Color::DarkGray
+            };
+            let up_color = if phase == "Upload" {
+                Color::LightMagenta
+            } else {
+                Color::DarkGray
+            };
 
             let text = vec![
                 Line::from(""),
-                Line::from(vec![Span::styled(format!("Download: {:.1} Mbps", down_val), Style::default().fg(down_color).add_modifier(Modifier::BOLD))]),
+                Line::from(vec![Span::styled(
+                    format!("Download: {:.1} Mbps", down_val),
+                    Style::default().fg(down_color).add_modifier(Modifier::BOLD),
+                )]),
                 Line::from(""),
-                Line::from(vec![Span::styled(format!("Upload:   {:.1} Mbps", up_val), Style::default().fg(up_color).add_modifier(Modifier::BOLD))]),
+                Line::from(vec![Span::styled(
+                    format!("Upload:   {:.1} Mbps", up_val),
+                    Style::default().fg(up_color).add_modifier(Modifier::BOLD),
+                )]),
             ];
 
             let p = Paragraph::new(text).alignment(Alignment::Center);
-            
+
             let center_v = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(6), Constraint::Min(0)])
+                .constraints([
+                    Constraint::Min(0),
+                    Constraint::Length(6),
+                    Constraint::Min(0),
+                ])
                 .split(inner);
-                
+
             frame.render_widget(p, center_v[1]);
 
             if is_finished {
                 let msg = Paragraph::new(Text::from(vec![Line::from(vec![Span::styled(
                     "Test Complete. Press [Enter] to return.",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 )])]))
                 .alignment(Alignment::Center);
-                
-                let b_layout = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(0), Constraint::Length(1)]).split(inner);
+
+                let b_layout = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(0), Constraint::Length(1)])
+                    .split(inner);
                 frame.render_widget(msg, b_layout[1]);
             } else {
                 let gauge = Gauge::default()
                     .gauge_style(Style::default().fg(Color::LightCyan).bg(Color::DarkGray))
                     .percent(progress.clamp(0.0, 100.0) as u16);
-                let b_layout = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(0), Constraint::Length(1)]).split(inner);
+                let b_layout = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(0), Constraint::Length(1)])
+                    .split(inner);
                 frame.render_widget(gauge, b_layout[1]);
             }
             return;
@@ -239,7 +401,11 @@ impl BandwidthWidget {
 
         // Download block
         let down_str = format!("{:.1}", down_val);
-        let down_color = if phase == "Download" { Color::LightCyan } else { Color::DarkGray };
+        let down_color = if phase == "Download" {
+            Color::LightCyan
+        } else {
+            Color::DarkGray
+        };
 
         let down_block = Block::default()
             .title(" Download (Mbps) ")
@@ -251,12 +417,20 @@ impl BandwidthWidget {
         // Center calculation for Download BigText (8 rows height, ~8 cols per char)
         let v_down = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(8), Constraint::Min(0)])
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(8),
+                Constraint::Min(0),
+            ])
             .split(down_inner);
-            
+
         let h_down = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(down_str.len() as u16 * 8), Constraint::Min(0)])
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(down_str.len() as u16 * 8),
+                Constraint::Min(0),
+            ])
             .split(v_down[1]);
 
         let down_text = BigText::builder()
@@ -264,12 +438,16 @@ impl BandwidthWidget {
             .style(Style::default().fg(down_color))
             .lines(vec![down_str.clone().into()])
             .build();
-            
+
         frame.render_widget(down_text, h_down[1]);
 
         // Upload block
         let up_str = format!("{:.1}", up_val);
-        let up_color = if phase == "Upload" { Color::LightMagenta } else { Color::DarkGray };
+        let up_color = if phase == "Upload" {
+            Color::LightMagenta
+        } else {
+            Color::DarkGray
+        };
 
         let up_block = Block::default()
             .title(" Upload (Mbps) ")
@@ -281,12 +459,20 @@ impl BandwidthWidget {
         // Center calculation for Upload BigText
         let v_up = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(8), Constraint::Min(0)])
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(8),
+                Constraint::Min(0),
+            ])
             .split(up_inner);
-            
+
         let h_up = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(up_str.len() as u16 * 8), Constraint::Min(0)])
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(up_str.len() as u16 * 8),
+                Constraint::Min(0),
+            ])
             .split(v_up[1]);
 
         let up_text = BigText::builder()
@@ -294,31 +480,45 @@ impl BandwidthWidget {
             .style(Style::default().fg(up_color))
             .lines(vec![up_str.clone().into()])
             .build();
-            
+
         frame.render_widget(up_text, h_up[1]);
 
         // Bottom block (Gauge/Status)
         let bottom_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3), Constraint::Min(0)])
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ])
             .split(right_layout[1]);
 
         let bottom_inner = bottom_layout[1];
         let center_gauge_h = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(10), Constraint::Percentage(80), Constraint::Percentage(10)])
+            .constraints([
+                Constraint::Percentage(10),
+                Constraint::Percentage(80),
+                Constraint::Percentage(10),
+            ])
             .split(bottom_inner);
 
         if is_finished {
             let msg = Paragraph::new(Text::from(vec![Line::from(vec![Span::styled(
                 "Test Complete. Press [Enter] to return to Ping View.",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )])]))
             .alignment(Alignment::Center);
             frame.render_widget(msg, center_gauge_h[1]);
         } else {
             let gauge = Gauge::default()
-                .block(Block::default().borders(Borders::ALL).title(format!(" {} Progress ", phase)))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!(" {} Progress ", phase)),
+                )
                 .gauge_style(Style::default().fg(Color::LightCyan).bg(Color::DarkGray))
                 .percent(progress.clamp(0.0, 100.0) as u16);
             frame.render_widget(gauge, center_gauge_h[1]);

@@ -1,11 +1,11 @@
+use super::{NetworkProbe, TelemetryEvent};
+use crate::models::{ProbeError, TracerouteHop};
+use crate::network::icmp::packet::IcmpResponse;
+use crate::network::icmp::{IcmpProvider, TracerouteIcmpProvider};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use crate::models::{ProbeError, TracerouteHop};
-use crate::network::icmp::{TracerouteIcmpProvider, IcmpProvider};
-use super::{NetworkProbe, TelemetryEvent};
-use crate::network::icmp::packet::IcmpResponse;
 
 pub struct TracerouteProbe {
     pub resolved_addr: SocketAddr,
@@ -15,13 +15,27 @@ pub struct TracerouteProbe {
 }
 
 impl TracerouteProbe {
-    pub fn new(resolved_addr: SocketAddr, timeout: Duration, max_hops: u8, icmp_identifier: u16) -> Self {
-        Self { resolved_addr, timeout, max_hops, icmp_identifier }
+    pub fn new(
+        resolved_addr: SocketAddr,
+        timeout: Duration,
+        max_hops: u8,
+        icmp_identifier: u16,
+    ) -> Self {
+        Self {
+            resolved_addr,
+            timeout,
+            max_hops,
+            icmp_identifier,
+        }
     }
 }
 
 impl NetworkProbe for TracerouteProbe {
-    async fn run(&mut self, tx: mpsc::Sender<TelemetryEvent>, cancel_token: CancellationToken) -> Result<(), ProbeError> {
+    async fn run(
+        &mut self,
+        tx: mpsc::Sender<TelemetryEvent>,
+        cancel_token: CancellationToken,
+    ) -> Result<(), ProbeError> {
         for ttl in 1..=self.max_hops {
             if cancel_token.is_cancelled() {
                 break;
@@ -33,18 +47,25 @@ impl NetworkProbe for TracerouteProbe {
             let mut is_dest_reached = false;
             let mut fatal_error = None;
             let mut last_icmp_err = None;
-            
+
             for probe_idx in 0..3 {
-                let seq = (ttl as u16) * 3 + probe_idx; 
+                let seq = (ttl as u16) * 3 + probe_idx;
                 let target_addr = self.resolved_addr;
                 let timeout_duration = self.timeout;
                 let identifier = self.icmp_identifier;
                 let ttl_u32 = ttl as u32;
 
                 let hop_result = {
-                    tracing::debug!("Sending probe TTL={}, Seq={}, ID={}", ttl_u32, seq, identifier);
+                    tracing::debug!(
+                        "Sending probe TTL={}, Seq={}, ID={}",
+                        ttl_u32,
+                        seq,
+                        identifier
+                    );
                     let provider = TracerouteIcmpProvider::new(identifier);
-                    provider.send_with_ttl(&target_addr, seq, ttl_u32, timeout_duration).await
+                    provider
+                        .send_with_ttl(&target_addr, seq, ttl_u32, timeout_duration)
+                        .await
                 };
 
                 match hop_result {
@@ -52,34 +73,40 @@ impl NetworkProbe for TracerouteProbe {
                         tracing::debug!("Received response for TTL={}: {:?}", ttl, result.response);
                         let (is_dest, icmp_error_msg) = match result.response {
                             IcmpResponse::EchoReply(r) => {
-                                let _t = r.type_; let _c = r.code;
+                                let _t = r.type_;
+                                let _c = r.code;
                                 (true, None)
-                            },
+                            }
                             IcmpResponse::TimeExceeded(t) => {
                                 (false, Some(format!("Type: 11, Code: {}", t.code)))
-                            },
+                            }
                             IcmpResponse::DestinationUnreachable(d) => {
                                 (true, Some(format!("Type: 3, Code: {}", d.code)))
-                            },
+                            }
                             IcmpResponse::Unknown { type_, code } => {
                                 (false, Some(format!("Type: {}, Code: {}", type_, code)))
-                            },
+                            }
                         };
-                        
+
                         rtt_sum += result.rtt_ms;
                         rtt_count += 1;
                         last_responder = Some(result.responder_ip.to_string());
-                        
+
                         if is_dest {
                             is_dest_reached = true;
                         }
-                        
+
                         if icmp_error_msg.is_some() {
                             last_icmp_err = icmp_error_msg;
                         }
                     }
                     Err(ProbeError::IcmpTimeout) => {
-                        tracing::warn!("Timeout/Error for TTL={}, Probe={}: {}", ttl, probe_idx, ProbeError::IcmpTimeout);
+                        tracing::warn!(
+                            "Timeout/Error for TTL={}, Probe={}: {}",
+                            ttl,
+                            probe_idx,
+                            ProbeError::IcmpTimeout
+                        );
                     }
                     Err(e) => {
                         tracing::error!("Fatal Error for TTL={}: {}", ttl, e);
@@ -87,15 +114,15 @@ impl NetworkProbe for TracerouteProbe {
                         break;
                     }
                 }
-                
+
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-            
+
             if let Some(err) = fatal_error {
                 tracing::error!("Traceroute probe failing due to fatal error: {}", err);
                 return Err(err);
             }
-            
+
             let hop = if rtt_count > 0 {
                 TracerouteHop {
                     hop_number: ttl,
@@ -113,7 +140,7 @@ impl NetworkProbe for TracerouteProbe {
                     icmp_error: None,
                 }
             };
-            
+
             if let Err(e) = tx.try_send(TelemetryEvent::TracerouteHop(hop.clone())) {
                 match e {
                     tokio::sync::mpsc::error::TrySendError::Full(_) => {

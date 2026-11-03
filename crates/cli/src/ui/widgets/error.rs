@@ -1,10 +1,10 @@
+use crate::ui::{AppMode, AppState};
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
-use crate::ui::{AppState, AppMode};
 
 #[derive(Default)]
 pub struct ErrorWidget;
@@ -21,7 +21,10 @@ impl ErrorWidget {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
 
-        let text = format!("\n\nPermission Denied: Administrator privileges (sudo) are required.\n\nDetails:\n{}", error_msg);
+        let text = format!(
+            "\n\nPermission Denied: Administrator privileges (sudo) are required.\n\nDetails:\n{}",
+            error_msg
+        );
 
         let paragraph = Paragraph::new(text)
             .style(Style::default().fg(Color::White))
@@ -36,7 +39,7 @@ impl ErrorWidget {
                 Constraint::Percentage(25),
             ])
             .split(area);
-            
+
         let inner_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([

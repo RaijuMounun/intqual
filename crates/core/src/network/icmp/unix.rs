@@ -1,13 +1,13 @@
 #![cfg(unix)]
+use socket2::{Domain, Protocol, Socket, Type};
 use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::time::Instant;
 use tokio::io::unix::AsyncFd;
-use socket2::{Domain, Protocol, Socket, Type};
+use tokio::time::Instant;
 
+use super::packet::{IcmpEchoReply, IcmpEchoRequest, IcmpResponse};
 use super::provider::{IcmpProvider, TracerouteHopResult};
-use super::packet::{IcmpEchoRequest, IcmpEchoReply, IcmpResponse};
 
 use crate::models::ProbeError;
 
@@ -22,9 +22,14 @@ impl UnixDgramIcmp {
 }
 
 impl IcmpProvider for UnixDgramIcmp {
-    async fn ping(&self, target: &SocketAddr, seq: u16, timeout: Duration) -> Result<f64, ProbeError> {
+    async fn ping(
+        &self,
+        target: &SocketAddr,
+        seq: u16,
+        timeout: Duration,
+    ) -> Result<f64, ProbeError> {
         let icmp_start = Instant::now();
-        
+
         let socket = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4)) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -59,7 +64,7 @@ impl IcmpProvider for UnixDgramIcmp {
         }
 
         let mut buf = [MaybeUninit::uninit(); 128];
-        
+
         let timeout_future = tokio::time::timeout(timeout, async {
             loop {
                 let mut guard = match async_fd.readable().await {
@@ -72,9 +77,8 @@ impl IcmpProvider for UnixDgramIcmp {
 
                 match guard.try_io(|inner| inner.get_ref().recv_from(&mut buf)) {
                     Ok(Ok((size, _))) => {
-                        let initialized_buf = unsafe {
-                            std::slice::from_raw_parts(buf.as_ptr() as *const u8, size)
-                        };
+                        let initialized_buf =
+                            unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, size) };
 
                         match IcmpEchoReply::decode(initialized_buf) {
                             Ok(reply) => {
@@ -87,11 +91,11 @@ impl IcmpProvider for UnixDgramIcmp {
                                 continue;
                             }
                         }
-                    },
+                    }
                     Ok(Err(e)) => {
                         tracing::error!("I/O Error on recv_from: {}", e);
-                        return Err(ProbeError::Socket(e))
-                    },
+                        return Err(ProbeError::Socket(e));
+                    }
                     Err(_would_block) => continue,
                 }
             }
@@ -110,9 +114,15 @@ impl IcmpProvider for UnixDgramIcmp {
         }
     }
 
-    async fn send_with_ttl(&self, target: &SocketAddr, seq: u16, ttl: u32, timeout: Duration) -> Result<TracerouteHopResult, ProbeError> {
+    async fn send_with_ttl(
+        &self,
+        target: &SocketAddr,
+        seq: u16,
+        ttl: u32,
+        timeout: Duration,
+    ) -> Result<TracerouteHopResult, ProbeError> {
         let icmp_start = Instant::now();
-        
+
         let socket = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4)) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -152,7 +162,7 @@ impl IcmpProvider for UnixDgramIcmp {
         }
 
         let mut buf = [MaybeUninit::uninit(); 1500];
-        
+
         let timeout_future = tokio::time::timeout(timeout, async {
             loop {
                 let mut guard = match async_fd.readable().await {
@@ -165,21 +175,31 @@ impl IcmpProvider for UnixDgramIcmp {
 
                 match guard.try_io(|inner| inner.get_ref().recv_from(&mut buf)) {
                     Ok(Ok((size, addr))) => {
-                        let initialized_buf = unsafe {
-                            std::slice::from_raw_parts(buf.as_ptr() as *const u8, size)
-                        };
+                        let initialized_buf =
+                            unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, size) };
 
                         match IcmpResponse::decode(initialized_buf) {
                             Ok(response) => {
                                 let is_match = match &response {
-                                    IcmpResponse::EchoReply(r) => r.sequence_number == seq && r.identifier == self.identifier,
-                                    IcmpResponse::TimeExceeded(t) => t.original_sequence == seq && t.original_identifier == self.identifier,
-                                    IcmpResponse::DestinationUnreachable(d) => d.original_sequence == seq && d.original_identifier == self.identifier,
+                                    IcmpResponse::EchoReply(r) => {
+                                        r.sequence_number == seq && r.identifier == self.identifier
+                                    }
+                                    IcmpResponse::TimeExceeded(t) => {
+                                        t.original_sequence == seq
+                                            && t.original_identifier == self.identifier
+                                    }
+                                    IcmpResponse::DestinationUnreachable(d) => {
+                                        d.original_sequence == seq
+                                            && d.original_identifier == self.identifier
+                                    }
                                     IcmpResponse::Unknown { .. } => false,
                                 };
-    
+
                                 if is_match {
-                                    let responder_ip = addr.as_socket().map(|s| s.ip()).unwrap_or_else(|| target.ip());
+                                    let responder_ip = addr
+                                        .as_socket()
+                                        .map(|s| s.ip())
+                                        .unwrap_or_else(|| target.ip());
                                     return Ok(TracerouteHopResult {
                                         rtt_ms: icmp_start.elapsed().as_secs_f64() * 1000.0,
                                         responder_ip,
@@ -188,12 +208,20 @@ impl IcmpProvider for UnixDgramIcmp {
                                 } else {
                                     let got_id = match &response {
                                         IcmpResponse::EchoReply(r) => Some(r.identifier),
-                                        IcmpResponse::TimeExceeded(t) => Some(t.original_identifier),
-                                        IcmpResponse::DestinationUnreachable(d) => Some(d.original_identifier),
+                                        IcmpResponse::TimeExceeded(t) => {
+                                            Some(t.original_identifier)
+                                        }
+                                        IcmpResponse::DestinationUnreachable(d) => {
+                                            Some(d.original_identifier)
+                                        }
                                         IcmpResponse::Unknown { .. } => None,
                                     };
                                     if let Some(got) = got_id {
-                                        tracing::debug!("Dropped packet: ID mismatch (Expected: {}, Got: {})", self.identifier, got);
+                                        tracing::debug!(
+                                            "Dropped packet: ID mismatch (Expected: {}, Got: {})",
+                                            self.identifier,
+                                            got
+                                        );
                                     }
                                 }
                             }
@@ -202,11 +230,11 @@ impl IcmpProvider for UnixDgramIcmp {
                                 continue;
                             }
                         }
-                    },
+                    }
                     Ok(Err(e)) => {
                         tracing::error!("I/O Error on recv_from: {}", e);
-                        return Err(ProbeError::Socket(e))
-                    },
+                        return Err(ProbeError::Socket(e));
+                    }
                     Err(_would_block) => continue,
                 }
             }

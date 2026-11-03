@@ -1,5 +1,5 @@
-use ratatui::prelude::{Frame, Rect};
 use crate::ui::AppState;
+use ratatui::prelude::{Frame, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveWidget {
@@ -20,7 +20,7 @@ impl ActiveWidget {
     }
 }
 
-pub mod latency;
 pub mod bandwidth;
-pub mod traceroute;
 pub mod error;
+pub mod latency;
+pub mod traceroute;

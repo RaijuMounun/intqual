@@ -1,11 +1,11 @@
+use super::{NetworkProbe, TelemetryEvent};
+use crate::models::ProbeError;
+use crate::network::icmp::{DefaultIcmpProvider, IcmpProvider};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use crate::models::ProbeError;
-use crate::network::icmp::{DefaultIcmpProvider, IcmpProvider};
-use super::{NetworkProbe, TelemetryEvent};
 
 pub struct PingProbe {
     pub target_ip: Arc<String>,
@@ -16,13 +16,29 @@ pub struct PingProbe {
 }
 
 impl PingProbe {
-    pub fn new(target_ip: Arc<String>, resolved_addr: SocketAddr, interval: Duration, timeout: Duration, icmp_identifier: u16) -> Self {
-        Self { target_ip, resolved_addr, interval, timeout, icmp_identifier }
+    pub fn new(
+        target_ip: Arc<String>,
+        resolved_addr: SocketAddr,
+        interval: Duration,
+        timeout: Duration,
+        icmp_identifier: u16,
+    ) -> Self {
+        Self {
+            target_ip,
+            resolved_addr,
+            interval,
+            timeout,
+            icmp_identifier,
+        }
     }
 }
 
 impl NetworkProbe for PingProbe {
-    async fn run(&mut self, tx: mpsc::Sender<TelemetryEvent>, cancel_token: CancellationToken) -> Result<(), ProbeError> {
+    async fn run(
+        &mut self,
+        tx: mpsc::Sender<TelemetryEvent>,
+        cancel_token: CancellationToken,
+    ) -> Result<(), ProbeError> {
         let mut sequence_counter: u64 = 0;
         let mut interval_timer = tokio::time::interval(self.interval);
 

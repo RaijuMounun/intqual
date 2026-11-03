@@ -14,8 +14,7 @@ cargo fmt --all -- --check
 cargo run -p intqual -- --help
 ```
 
-- `cargo fmt --all -- --check` currently fails: the codebase was never formatted. Do not
-  reformat files you are not otherwise changing; a one-off `cargo fmt --all` commit is pending.
+- The repo is rustfmt-clean; keep `cargo fmt --all -- --check` passing.
 - `cargo run -p intqual` (the TUI) sends real network traffic and writes `intqual.log` to the
   current directory. `--mock` currently hangs before the UI appears (see assessment §5.2).
 - On Windows, ICMP ping and traceroute need Administrator; TCP and the speed test do not.
@@ -56,7 +55,7 @@ process that prints `TracerouteHop` as JSON lines.
 
 - Before saying a change is done: `cargo build --workspace`, `cargo test --workspace` and
   `cargo clippy --workspace --all-targets -- -D warnings` must pass. Paste the result.
-- Run `cargo fmt` only on files you changed (`rustfmt <file>`), until the repo-wide format commit lands.
+- Run `cargo fmt --all` before every commit.
 - Tests must never need Administrator/root or the internet. Loopback (`127.0.0.1`) is fine.
   Anything that does need them gets `#[ignore]` with a comment saying why.
 - Test ICMP logic through `packet.rs` byte buffers or a fake `IcmpProvider`, not real sockets.

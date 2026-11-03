@@ -4,7 +4,7 @@ use clap::Parser;
 use tokio::sync::mpsc;
 
 /// Defines the Command Line Interface (CLI) schema.
-/// Using `clap` allows us to define the API declaratively, ensuring POSIX-compliant 
+/// Using `clap` allows us to define the API declaratively, ensuring POSIX-compliant
 /// argument parsing and auto-generating standard documentation (--help) without manual boilerplate.
 #[derive(Parser, Debug)]
 #[command(author, version, about = "A zero-runtime-dependency asynchronous network analysis engine", long_about = None)]
@@ -15,7 +15,7 @@ struct Cli {
     target: String,
 
     /// The target port for TCP handshake measurements.
-    /// Defaults to HTTPS (443) because most modern corporate firewalls and ISPs 
+    /// Defaults to HTTPS (443) because most modern corporate firewalls and ISPs
     /// allow outbound 443 traffic, drastically reducing the chance of false-positive port blocking.
     #[arg(short, long, default_value_t = 443)]
     port: u16,
@@ -26,7 +26,7 @@ struct Cli {
     interval: u64,
 
     /// The connection timeout threshold in milliseconds.
-    /// Enforces strict cutoffs to prevent zombie tasks from piling up in the Tokio 
+    /// Enforces strict cutoffs to prevent zombie tasks from piling up in the Tokio
     /// reactor if a target network blackholes our packets.
     #[arg(short = 't', long, default_value_t = 1000)]
     timeout: u64,
@@ -41,7 +41,7 @@ struct Cli {
 }
 
 /// The asynchronous application entry point.
-/// #[tokio::main] Initializes the async runtime required for multiplexing concurrent 
+/// #[tokio::main] Initializes the async runtime required for multiplexing concurrent
 /// network operations without allocating a heavy OS thread for each individual connection.
 #[tokio::main]
 async fn main() -> Result<(), ()> {
@@ -51,7 +51,7 @@ async fn main() -> Result<(), ()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_writer(non_blocking)
         .init();
@@ -73,7 +73,7 @@ async fn main() -> Result<(), ()> {
                 std::process::exit(1);
             }
         };
-        
+
         let icmp_identifier = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -126,7 +126,8 @@ async fn main() -> Result<(), ()> {
         let engine = intqual_core::engine::MockEngine;
         engine.start(tx.clone(), cmd_rx).await;
     } else {
-        let engine = intqual_core::engine::CoreEngine::new(cli.target, cli.port, cli.interval, cli.timeout);
+        let engine =
+            intqual_core::engine::CoreEngine::new(cli.target, cli.port, cli.interval, cli.timeout);
         engine.start(tx.clone(), cmd_rx).await;
     }
 

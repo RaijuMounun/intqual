@@ -11,8 +11,8 @@ pub mod unix_raw;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+pub use packet::{IcmpEchoReply, IcmpEchoRequest};
 pub use provider::IcmpProvider;
-pub use packet::{IcmpEchoRequest, IcmpEchoReply};
 
 #[cfg(unix)]
 pub type DefaultIcmpProvider = unix::UnixDgramIcmp;

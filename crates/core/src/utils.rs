@@ -1,5 +1,5 @@
-use std::time::{SystemTime, UNIX_EPOCH};
 use crate::models::ProbeError;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn current_timestamp() -> Result<u64, ProbeError> {
     SystemTime::now()

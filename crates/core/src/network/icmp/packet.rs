@@ -31,7 +31,7 @@ impl<'a> IcmpEchoRequest<'a> {
 
         // 5. Calculate the Checksum over the entire buffer
         let checksum = Self::calculate_checksum(&buffer);
-        
+
         // 6. Write the calculated Checksum back into Bytes 2 and 3 (Big-Endian)
         let checksum_bytes = checksum.to_be_bytes();
         buffer[2] = checksum_bytes[0];
@@ -47,7 +47,7 @@ impl<'a> IcmpEchoRequest<'a> {
 
         buffer[0] = ICMP_TYPE_ECHO_REQUEST;
         buffer[1] = ICMP_CODE_ECHO_REQUEST;
-        
+
         // Byte 2 and 3 are for the Checksum. Leave them as 0x00.
 
         let id_bytes = self.identifier.to_be_bytes();
@@ -96,7 +96,6 @@ impl<'a> IcmpEchoRequest<'a> {
     }
 }
 
-
 pub const ICMP_TYPE_ECHO_REPLY: u8 = 0;
 pub const ICMP_TYPE_DEST_UNREACHABLE: u8 = 3;
 pub const ICMP_TYPE_TIME_EXCEEDED: u8 = 11;
@@ -117,23 +116,27 @@ impl IcmpEchoReply {
         // An ICMP header must be at least 8 bytes long.
         if buffer.len() < 8 {
             tracing::error!("Buffer too short to contain a valid ICMP header");
-            return Err(ProbeError::PacketError("Buffer too short to contain a valid ICMP header".to_string()));
+            return Err(ProbeError::PacketError(
+                "Buffer too short to contain a valid ICMP header".to_string(),
+            ));
         }
 
         let type_ = buffer[0];
         let code = buffer[1];
 
         // Only parse if it's actually an Echo Reply.
-        // (Note: Unprivileged datagram sockets usually strip the IP header, 
+        // (Note: Unprivileged datagram sockets usually strip the IP header,
         // so byte 0 is the start of the ICMP header).
         if type_ != ICMP_TYPE_ECHO_REPLY {
             tracing::error!("Not an ICMP Echo Reply. Type: {}", type_);
-            return Err(ProbeError::PacketError("Not an ICMP Echo Reply".to_string()));
+            return Err(ProbeError::PacketError(
+                "Not an ICMP Echo Reply".to_string(),
+            ));
         }
 
         // Reconstruct the 16-bit Identifier from Network Byte Order (Big-Endian)
         let identifier = u16::from_be_bytes([buffer[4], buffer[5]]);
-        
+
         // Reconstruct the 16-bit Sequence Number from Network Byte Order (Big-Endian)
         let sequence_number = u16::from_be_bytes([buffer[6], buffer[7]]);
 
@@ -170,7 +173,8 @@ pub struct IcmpDestUnreachable {
 
 impl IcmpResponse {
     pub fn strip_ipv4_header(buffer: &[u8]) -> &[u8] {
-        if !buffer.is_empty() && (buffer[0] >> 4) == 4 { // IPv4 check
+        if !buffer.is_empty() && (buffer[0] >> 4) == 4 {
+            // IPv4 check
             let ihl = (buffer[0] & 0x0F) as usize;
             let header_len = ihl * 4;
             if buffer.len() >= header_len {
@@ -188,9 +192,16 @@ impl IcmpResponse {
         tracing::debug!("Received ICMP Type: {}, Code: {}", buffer[0], buffer[1]);
         match buffer[0] {
             ICMP_TYPE_ECHO_REPLY => Ok(IcmpResponse::EchoReply(IcmpEchoReply::decode(buffer)?)),
-            ICMP_TYPE_TIME_EXCEEDED => Ok(IcmpResponse::TimeExceeded(Self::decode_time_exceeded(buffer)?)),
-            ICMP_TYPE_DEST_UNREACHABLE => Ok(IcmpResponse::DestinationUnreachable(Self::decode_dest_unreachable(buffer)?)),
-            t => Ok(IcmpResponse::Unknown { type_: t, code: buffer[1] }),
+            ICMP_TYPE_TIME_EXCEEDED => Ok(IcmpResponse::TimeExceeded(Self::decode_time_exceeded(
+                buffer,
+            )?)),
+            ICMP_TYPE_DEST_UNREACHABLE => Ok(IcmpResponse::DestinationUnreachable(
+                Self::decode_dest_unreachable(buffer)?,
+            )),
+            t => Ok(IcmpResponse::Unknown {
+                type_: t,
+                code: buffer[1],
+            }),
         }
     }
 
@@ -217,40 +228,57 @@ impl IcmpResponse {
         // [0..8] ICMP Header (Time Exceeded / Dest Unreachable)
         // [8..X] Original IP Header (usually 20 bytes)
         // [X..X+8] Original ICMP Header
-        if buffer.len() < 36 { // 8 + 20 + 8
+        if buffer.len() < 36 {
+            // 8 + 20 + 8
             tracing::error!("Buffer too short to contain original IP and ICMP headers");
-            return Err(ProbeError::PacketError("Buffer too short to contain original IP and ICMP headers".to_string()));
+            return Err(ProbeError::PacketError(
+                "Buffer too short to contain original IP and ICMP headers".to_string(),
+            ));
         }
-        
+
         // Ensure it's an IPv4 header by checking version (first 4 bits)
         let ip_version = buffer[8] >> 4;
         if ip_version != 4 {
             tracing::error!("Original IP header is not IPv4");
-            return Err(ProbeError::PacketError("Original IP header is not IPv4".to_string()));
+            return Err(ProbeError::PacketError(
+                "Original IP header is not IPv4".to_string(),
+            ));
         }
-        
+
         let ihl = (buffer[8] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
-        
+
         if buffer.len() < 8 + ip_header_len + 8 {
             tracing::error!("Buffer too short based on original IHL");
-            return Err(ProbeError::PacketError("Buffer too short based on original IHL".to_string()));
+            return Err(ProbeError::PacketError(
+                "Buffer too short based on original IHL".to_string(),
+            ));
         }
-        
+
         // Offset 9 in IP header is the Protocol field
-        if buffer[8 + 9] != 1 /* ICMP */ {
+        if buffer[8 + 9] != 1
+        /* ICMP */
+        {
             tracing::error!("Original protocol was not ICMP");
-            return Err(ProbeError::PacketError("Original protocol was not ICMP".to_string()));
+            return Err(ProbeError::PacketError(
+                "Original protocol was not ICMP".to_string(),
+            ));
         }
-        
+
         let orig_icmp_offset = 8 + ip_header_len;
-        
+
         // Extract identifier and sequence from original ICMP header
         // Identifier is at offset 4, Sequence is at offset 6
-        let identifier = u16::from_be_bytes([buffer[orig_icmp_offset + 4], buffer[orig_icmp_offset + 5]]);
-        let sequence = u16::from_be_bytes([buffer[orig_icmp_offset + 6], buffer[orig_icmp_offset + 7]]);
-        
-        tracing::debug!("Parsed inner payload - Original ID: {}, Original Seq: {}", identifier, sequence);
+        let identifier =
+            u16::from_be_bytes([buffer[orig_icmp_offset + 4], buffer[orig_icmp_offset + 5]]);
+        let sequence =
+            u16::from_be_bytes([buffer[orig_icmp_offset + 6], buffer[orig_icmp_offset + 7]]);
+
+        tracing::debug!(
+            "Parsed inner payload - Original ID: {}, Original Seq: {}",
+            identifier,
+            sequence
+        );
 
         Ok((identifier, sequence))
     }

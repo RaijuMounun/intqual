@@ -1,10 +1,10 @@
+use crate::models::ProbeError;
+use crate::probe::{NetworkProbe, TelemetryEvent, ping::PingProbe, tcp::TcpProbe};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use crate::models::ProbeError;
-use crate::probe::{NetworkProbe, TelemetryEvent, ping::PingProbe, tcp::TcpProbe};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineCommand {
@@ -34,21 +34,28 @@ impl CoreEngine {
 }
 
 impl super::NetworkEngine for CoreEngine {
-    async fn start(self, tx: mpsc::Sender<TelemetryEvent>, mut cmd_rx: mpsc::Receiver<EngineCommand>) {
-            let addr_string = format!("{}:{}", self.target_ip, self.target_port);
+    async fn start(
+        self,
+        tx: mpsc::Sender<TelemetryEvent>,
+        mut cmd_rx: mpsc::Receiver<EngineCommand>,
+    ) {
+        let addr_string = format!("{}:{}", self.target_ip, self.target_port);
         let resolved_addr: SocketAddr = match tokio::net::lookup_host(&addr_string).await {
             Ok(mut addrs) => {
                 if let Some(addr) = addrs.next() {
                     addr
                 } else {
-                    tracing::error!("DNS resolution succeeded but returned zero IP addresses for the target.");
-                    let err = ProbeError::DnsResolution("No IP addresses found for host".to_string());
+                    tracing::error!(
+                        "DNS resolution succeeded but returned zero IP addresses for the target."
+                    );
+                    let err =
+                        ProbeError::DnsResolution("No IP addresses found for host".to_string());
                     if tx.send(TelemetryEvent::Fatal(err)).await.is_err() {
                         tracing::error!("UI channel is dead. Unable to propagate fatal DNS error.");
                     }
                     return;
                 }
-            },
+            }
             Err(e) => {
                 let probe_err = match e.kind() {
                     std::io::ErrorKind::NotFound => {
@@ -56,7 +63,9 @@ impl super::NetworkEngine for CoreEngine {
                         ProbeError::DnsResolution("Host not found".to_string())
                     }
                     std::io::ErrorKind::TimedOut => {
-                        tracing::error!("Fatal Error: DNS Resolution Failed: DNS request timed out");
+                        tracing::error!(
+                            "Fatal Error: DNS Resolution Failed: DNS request timed out"
+                        );
                         ProbeError::DnsResolution("DNS request timed out".to_string())
                     }
                     _ => {
@@ -67,10 +76,14 @@ impl super::NetworkEngine for CoreEngine {
                 if let Err(send_err) = tx.try_send(TelemetryEvent::Fatal(probe_err)) {
                     match send_err {
                         tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                            tracing::warn!("UI channel overloaded, dropping telemetry frame to prevent memory exhaustion");
+                            tracing::warn!(
+                                "UI channel overloaded, dropping telemetry frame to prevent memory exhaustion"
+                            );
                         }
                         tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                            tracing::error!("UI channel is dead. Shutting down due to DNS failure.");
+                            tracing::error!(
+                                "UI channel is dead. Shutting down due to DNS failure."
+                            );
                             return;
                         }
                     }
@@ -83,8 +96,14 @@ impl super::NetworkEngine for CoreEngine {
             Ok(d) => (d.subsec_nanos() % 65535) as u16,
             Err(e) => {
                 tracing::error!("System Time Error: {}", e);
-                if tx.send(TelemetryEvent::Fatal(ProbeError::TimeSyncError)).await.is_err() {
-                    tracing::error!("UI channel is dead. Unable to propagate fatal time synchronization error.");
+                if tx
+                    .send(TelemetryEvent::Fatal(ProbeError::TimeSyncError))
+                    .await
+                    .is_err()
+                {
+                    tracing::error!(
+                        "UI channel is dead. Unable to propagate fatal time synchronization error."
+                    );
                     return;
                 }
                 return;
@@ -95,7 +114,15 @@ impl super::NetworkEngine for CoreEngine {
             let token = CancellationToken::new();
             let mut active_token: Option<CancellationToken> = Some(token.clone());
             let mut bw_cancel_token: Option<CancellationToken> = None;
-            Self::spawn_probes(self.target_ip.clone(), resolved_addr, self.interval, self.timeout, icmp_identifier, tx.clone(), token);
+            Self::spawn_probes(
+                self.target_ip.clone(),
+                resolved_addr,
+                self.interval,
+                self.timeout,
+                icmp_identifier,
+                tx.clone(),
+                token,
+            );
 
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
@@ -103,7 +130,7 @@ impl super::NetworkEngine for CoreEngine {
                         if let Some(token) = active_token.take() {
                             token.cancel();
                         }
-                    },
+                    }
                     EngineCommand::Resume => {
                         if let Some(token) = bw_cancel_token.take() {
                             token.cancel();
@@ -111,9 +138,17 @@ impl super::NetworkEngine for CoreEngine {
                         if active_token.is_none() {
                             let new_token = CancellationToken::new();
                             active_token = Some(new_token.clone());
-                            Self::spawn_probes(self.target_ip.clone(), resolved_addr, self.interval, self.timeout, icmp_identifier, tx.clone(), new_token);
+                            Self::spawn_probes(
+                                self.target_ip.clone(),
+                                resolved_addr,
+                                self.interval,
+                                self.timeout,
+                                icmp_identifier,
+                                tx.clone(),
+                                new_token,
+                            );
                         }
-                    },
+                    }
                     EngineCommand::Stop => {
                         if let Some(token) = active_token.take() {
                             token.cancel();
@@ -122,38 +157,45 @@ impl super::NetworkEngine for CoreEngine {
                             token.cancel();
                         }
                         break;
-                    },
+                    }
                     EngineCommand::StartBandwidthTest => {
                         if let Some(token) = active_token.take() {
                             token.cancel();
                         }
-                        
+
                         let tx_for_bw = tx.clone();
                         let token = CancellationToken::new();
                         bw_cancel_token = Some(token.clone());
                         tokio::spawn(async move {
                             let result = crate::network::bandwidth::test_download(
-                                "speed.cloudflare.com", 
-                                "/__down?bytes=50000000", 
+                                "speed.cloudflare.com",
+                                "/__down?bytes=50000000",
                                 tx_for_bw.clone(),
-                                token
-                            ).await;
+                                token,
+                            )
+                            .await;
 
                             if let Err(e) = result {
                                 tracing::error!("Bandwidth test execution failed: {:?}", e);
-                                if let Err(send_err) = tx_for_bw.try_send(TelemetryEvent::BandwidthError(e)) {
+                                if let Err(send_err) =
+                                    tx_for_bw.try_send(TelemetryEvent::BandwidthError(e))
+                                {
                                     match send_err {
                                         tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                                            tracing::warn!("UI channel overloaded, dropping telemetry frame to prevent memory exhaustion");
+                                            tracing::warn!(
+                                                "UI channel overloaded, dropping telemetry frame to prevent memory exhaustion"
+                                            );
                                         }
                                         tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                                            tracing::error!("UI channel is dead. Shutting down bandwidth worker loop.");
+                                            tracing::error!(
+                                                "UI channel is dead. Shutting down bandwidth worker loop."
+                                            );
                                         }
                                     }
                                 }
                             }
                         });
-                    },
+                    }
                     EngineCommand::StartTraceroute(_target) => {
                         if let Some(token) = active_token.take() {
                             token.cancel(); // Pause ping/tcp while tracerouting
@@ -163,19 +205,30 @@ impl super::NetworkEngine for CoreEngine {
                         let token = CancellationToken::new();
                         let identifier = icmp_identifier;
                         let addr = resolved_addr;
-                        
+
                         tokio::spawn(async move {
                             let mut probe = crate::probe::traceroute::TracerouteProbe::new(
-                                addr, 
-                                Duration::from_millis(1000), 
-                                30, 
-                                identifier
+                                addr,
+                                Duration::from_millis(1000),
+                                30,
+                                identifier,
                             );
-                            
-                            if let Err(e) = crate::probe::NetworkProbe::run(&mut probe, tx_traceroute.clone(), token).await {
-                                tracing::error!("Traceroute probe encountered fatal error: {:?}", e);
+
+                            if let Err(e) = crate::probe::NetworkProbe::run(
+                                &mut probe,
+                                tx_traceroute.clone(),
+                                token,
+                            )
+                            .await
+                            {
+                                tracing::error!(
+                                    "Traceroute probe encountered fatal error: {:?}",
+                                    e
+                                );
                                 if tx_traceroute.send(TelemetryEvent::Fatal(e)).await.is_err() {
-                                    tracing::error!("UI channel is dead. Cannot send fatal telemetry event. Shutting down engine worker.");
+                                    tracing::error!(
+                                        "UI channel is dead. Cannot send fatal telemetry event. Shutting down engine worker."
+                                    );
                                 }
                             }
                         });
@@ -196,7 +249,13 @@ impl CoreEngine {
         tx: mpsc::Sender<TelemetryEvent>,
         token: CancellationToken,
     ) {
-        let mut ping_probe = PingProbe::new(target_ip.clone(), resolved_addr, interval, timeout, icmp_identifier);
+        let mut ping_probe = PingProbe::new(
+            target_ip.clone(),
+            resolved_addr,
+            interval,
+            timeout,
+            icmp_identifier,
+        );
         let mut tcp_probe = TcpProbe::new(target_ip, resolved_addr, interval, timeout);
 
         let tx_ping = tx.clone();
@@ -205,7 +264,9 @@ impl CoreEngine {
             if let Err(e) = ping_probe.run(tx_ping.clone(), token_ping).await {
                 tracing::error!("Ping probe encountered fatal error: {:?}", e);
                 if tx_ping.send(TelemetryEvent::Fatal(e)).await.is_err() {
-                    tracing::error!("UI channel is dead. Cannot send fatal telemetry event. Shutting down engine worker.");
+                    tracing::error!(
+                        "UI channel is dead. Cannot send fatal telemetry event. Shutting down engine worker."
+                    );
                 }
             }
         });
@@ -216,7 +277,9 @@ impl CoreEngine {
             if let Err(e) = tcp_probe.run(tx_tcp.clone(), token_tcp).await {
                 tracing::error!("TCP probe encountered fatal error: {:?}", e);
                 if tx_tcp.send(TelemetryEvent::Fatal(e)).await.is_err() {
-                    tracing::error!("UI channel is dead. Cannot send fatal telemetry event. Shutting down engine worker.");
+                    tracing::error!(
+                        "UI channel is dead. Cannot send fatal telemetry event. Shutting down engine worker."
+                    );
                 }
             }
         });

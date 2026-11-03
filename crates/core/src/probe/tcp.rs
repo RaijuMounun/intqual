@@ -1,12 +1,12 @@
+use super::{NetworkProbe, TelemetryEvent};
+use crate::models::ProbeError;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::time::Instant;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use crate::models::ProbeError;
-use super::{NetworkProbe, TelemetryEvent};
 
 pub struct TcpProbe {
     pub target_ip: Arc<String>,
@@ -16,13 +16,27 @@ pub struct TcpProbe {
 }
 
 impl TcpProbe {
-    pub fn new(target_ip: Arc<String>, resolved_addr: SocketAddr, interval: Duration, timeout: Duration) -> Self {
-        Self { target_ip, resolved_addr, interval, timeout }
+    pub fn new(
+        target_ip: Arc<String>,
+        resolved_addr: SocketAddr,
+        interval: Duration,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            target_ip,
+            resolved_addr,
+            interval,
+            timeout,
+        }
     }
 }
 
 impl NetworkProbe for TcpProbe {
-    async fn run(&mut self, tx: mpsc::Sender<TelemetryEvent>, cancel_token: CancellationToken) -> Result<(), ProbeError> {
+    async fn run(
+        &mut self,
+        tx: mpsc::Sender<TelemetryEvent>,
+        cancel_token: CancellationToken,
+    ) -> Result<(), ProbeError> {
         let mut sequence_counter: u64 = 0;
         let mut interval_timer = tokio::time::interval(self.interval);
 
@@ -41,14 +55,14 @@ impl NetworkProbe for TcpProbe {
                     let timeout_duration = self.timeout;
 
                     let start_time = Instant::now();
-                    
+
                     let tcp_ping_result = match tokio::time::timeout(
-                        timeout_duration, 
+                        timeout_duration,
                         TcpStream::connect(target_addr)
                     ).await {
                         Ok(Ok(stream)) => {
                             let elapsed = start_time.elapsed().as_secs_f64() * 1000.0;
-                            
+
                             match tokio::task::spawn_blocking(move || -> Result<(), ProbeError> {
                                 let sock_ref = socket2::SockRef::from(&stream);
                                 if let Err(e) = sock_ref.set_linger(Some(Duration::from_secs(0))) {
