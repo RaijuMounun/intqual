@@ -32,7 +32,8 @@ cargo run -p intqual -- --help
   - `network/bandwidth.rs` — speed test.
 - `crates/cli` (`intqual`, bin): `main.rs` (clap, hidden `--worker-mode traceroute`),
   `ui/mod.rs` (`AppState`, event loop), `ui/widgets/*` (pure render functions).
-- `crates/core/scratch.rs` — leftover, not built. Release: `.github/workflows/release.yml`,
+- `crates/core/scratch.rs` — leftover, not built. CI: `.github/workflows/ci.yml` (fmt, clippy,
+  test on Linux/Windows/macOS; the only place Unix code gets linted). Release: `release.yml`,
   `Makefile`, `PKGBUILD`, `scripts/distribute.sh`.
 
 Data flow: probes → `mpsc::Sender<TelemetryEvent>` (cap 100) → `AppState::handle_event` → widgets.
