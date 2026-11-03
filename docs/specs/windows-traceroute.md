@@ -1,6 +1,6 @@
 # Spec: Working traceroute (and ping) on Windows
 
-Status: **draft, awaiting approval** · Date: 2026-11-03 · Scope: Windows only (Unix paths unchanged).
+Status: **approved, implemented** (manual test pending) · Date: 2026-11-03 · Scope: Windows only (Unix paths unchanged).
 
 ## Problem
 

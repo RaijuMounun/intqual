@@ -1,9 +1,9 @@
 use crate::ui::AppState;
 use ratatui::{
     Frame,
-    layout::{Constraint, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Row, Table},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap},
 };
 
 #[derive(Default)]
@@ -71,10 +71,28 @@ impl TracerouteWidget {
             )
             .bottom_margin(1);
 
-        let title = if app.traceroute_complete {
+        let title = if app.last_error.is_some() {
+            " Traceroute (Failed) "
+        } else if app.traceroute_complete {
             " Traceroute (Complete) "
         } else {
             " Traceroute (Running...) "
+        };
+
+        let block = Block::default().title(title).borders(Borders::ALL);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let table_area = if let Some(err) = &app.last_error {
+            let [error_area, rest] =
+                Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(inner);
+            let error = Paragraph::new(err.as_str())
+                .style(Style::default().fg(Color::LightRed))
+                .wrap(Wrap { trim: true });
+            frame.render_widget(error, error_area);
+            rest
+        } else {
+            inner
         };
 
         let table = Table::new(
@@ -86,9 +104,44 @@ impl TracerouteWidget {
                 Constraint::Length(15),
             ],
         )
-        .header(header)
-        .block(Block::default().title(title).borders(Borders::ALL));
+        .header(header);
 
-        frame.render_widget(table, area);
+        frame.render_widget(table, table_area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn render_to_string(app: &AppState) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal
+            .draw(|frame| TracerouteWidget::render(frame, frame.area(), app))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn shows_last_error_on_the_traceroute_screen() {
+        let mut app = AppState::new();
+        app.last_error = Some("Traceroute Error: ICMP Timeout".to_string());
+        let screen = render_to_string(&app);
+        assert!(screen.contains("Traceroute (Failed)"));
+        assert!(screen.contains("Traceroute Error: ICMP Timeout"));
+    }
+
+    #[test]
+    fn running_screen_has_no_error_line() {
+        let screen = render_to_string(&AppState::new());
+        assert!(screen.contains("Traceroute (Running...)"));
+        assert!(!screen.contains("Error"));
     }
 }

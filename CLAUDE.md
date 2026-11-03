@@ -17,8 +17,8 @@ cargo run -p intqual -- --help
 - The repo is rustfmt-clean; keep `cargo fmt --all -- --check` passing.
 - `cargo run -p intqual` (the TUI) sends real network traffic and writes `intqual.log` to the
   current directory. `--mock` shows simulated ping/TCP data with no network traffic.
-- Windows ICMP uses raw sockets (`icmp/windows.rs`). A non-elevated loopback traceroute works;
-  remote hosts are unverified. Never assume admin is available.
+- Windows ICMP uses the ICMP Helper API (`IcmpSendEcho`, `icmp/windows.rs`): no admin needed.
+  Never assume admin is available.
 - Clippy on Windows does not compile `#[cfg(unix)]` files (`icmp/unix.rs`, `icmp/unix_raw.rs`).
 
 ## Layout
@@ -37,8 +37,9 @@ cargo run -p intqual -- --help
   `Makefile`, `PKGBUILD`, `scripts/distribute.sh`.
 
 Data flow: probes → `mpsc::Sender<TelemetryEvent>` (cap 100) → `AppState::handle_event` → widgets.
-UI → `mpsc::Sender<EngineCommand>` (cap 10) → engine loop. Traceroute runs in a `sudo` child
-process that prints `TracerouteHop` as JSON lines.
+UI → `mpsc::Sender<EngineCommand>` (cap 10) → engine loop. Traceroute runs in-process on Windows
+(`EngineCommand::StartTraceroute`); on Unix it runs in a `sudo` child process that prints
+`TracerouteHop` as JSON lines.
 
 ## Conventions observed
 
