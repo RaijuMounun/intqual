@@ -41,8 +41,8 @@ impl super::NetworkEngine for CoreEngine {
     ) {
         let addr_string = format!("{}:{}", self.target_ip, self.target_port);
         let resolved_addr: SocketAddr = match tokio::net::lookup_host(&addr_string).await {
-            Ok(mut addrs) => {
-                if let Some(addr) = addrs.next() {
+            Ok(addrs) => {
+                if let Some(addr) = crate::network::pick_address(addrs) {
                     addr
                 } else {
                     tracing::error!(

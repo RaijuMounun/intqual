@@ -66,7 +66,7 @@ async fn main() -> Result<(), ()> {
         // The parent reads stderr when the worker exits non-zero, so every failure
         // must be printed there, not only logged.
         let resolved_addr = match tokio::net::lookup_host(&addr_string).await {
-            Ok(mut addrs) => addrs.next().unwrap_or_else(|| {
+            Ok(addrs) => intqual_core::pick_address(addrs).unwrap_or_else(|| {
                 tracing::error!("Worker DNS error: no addresses found");
                 eprintln!("DNS error: no addresses found for {}", cli.target);
                 std::process::exit(1);
