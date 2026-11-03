@@ -17,7 +17,6 @@ pub async fn test_download(
         .tcp_keepalive(std::time::Duration::from_secs(15))
         .pool_max_idle_per_host(16)
         .connect_timeout(std::time::Duration::from_secs(5))
-        .danger_accept_invalid_certs(true)
         .build()
     {
         Ok(client) => client,
