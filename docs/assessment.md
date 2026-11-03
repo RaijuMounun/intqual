@@ -96,7 +96,9 @@ ui::run_app (ui/mod.rs:326)
 | `cargo run -p intqual -- --help` | OK — prints help. Side effect: creates `intqual.log` in the current directory (`main.rs:48`). |
 | `cargo tree --workspace --duplicates` | Only transitive duplicates (`darling` 0.20/0.23, `hashbrown` 0.16/0.17, `itertools`) — harmless. |
 
-Not run (by constraint): the real TUI, ICMP/traceroute (raw sockets need admin), the speed test (network).
+Not run (by constraint): the real TUI, ICMP/traceroute to remote hosts, the speed test (network).
+
+Run later (after commit `134c567`): `intqual --worker-mode traceroute 127.0.0.1` from a **non-elevated** shell (checked with `WindowsPrincipal.IsInRole(Administrator)` → `False`) printed one hop `127.0.0.1`, `is_destination: true`, exit 0. So on this Windows 11 machine a raw ICMP socket opens without admin.
 
 CI: only `release.yml`, triggered by tags. It builds (`release.yml:56`, no `--locked`) but never runs `fmt`, `clippy` or `test`. There is no CI on push/PR.
 
@@ -107,11 +109,11 @@ CI: only `release.yml`, triggered by tags. It builds (`release.yml:56`, no `--lo
 | Platform | Ping provider | Traceroute provider | Privilege |
 |---|---|---|---|
 | Linux/macOS | `UnixDgramIcmp` (`icmp/mod.rs:17-18`) | `unix_raw::RawIcmpProvider` (`:20-21`) | Ping: unprivileged if `net.ipv4.ping_group_range` allows it. Traceroute: root via sudo worker. |
-| Windows | `windows::RawIcmpProvider` (`:23-24`) | same (`:26-27`) | **Both need Administrator.** |
+| Windows | `windows::RawIcmpProvider` (`:23-24`) | same (`:26-27`) | Expected to need Administrator, but a non-elevated loopback test worked (§3). Unverified for remote hosts. |
 
 Risks:
 
-1. **Windows ping needs admin.** `windows.rs:28` opens `SOCK_RAW`; without elevation it returns `PermissionDenied` every tick, and the UI shows "Perm Denied" (`latency.rs:29-32`). This contradicts "unprivileged" in `PKGBUILD:5` and the README architecture section. The standard unprivileged API on Windows is `IcmpSendEcho2` (iphlpapi), which `ping.exe` and `tracert.exe` use; it also supports TTL, so it would fix traceroute too.
+1. **Windows privilege is unclear.** `windows.rs:28` opens `SOCK_RAW`, which Microsoft documents as admin-only, yet the non-elevated loopback test in §3 worked. Not verified: remote hosts, where the reply is a Time Exceeded packet from a router and Windows Firewall may drop inbound ICMP. If it fails, every tick returns `PermissionDenied` and the UI shows "Perm Denied" (`latency.rs:29-32`). The documented unprivileged API on Windows is `IcmpSendEcho2` (iphlpapi), which `ping.exe` and `tracert.exe` use; it also supports TTL. Test on a remote target from a normal shell before changing anything.
 2. **Windows traceroute calls `sudo`** (`ui/mod.rs:407`, `:421`). Windows 11 `sudo` is off by default and does not accept `-v`/`-E` the same way. The README admits it is broken, yet `release.yml:158-170` still publishes to winget.
 3. **Windows timeout is per `recv`, not per ping.** `set_read_timeout` (`windows.rs:52`) restarts on every foreign ICMP packet in the loop (`windows.rs:68-96`). On a busy host one ping can wait much longer than `--timeout`.
 4. **IPv4 only.** Every socket is `Domain::IPV4` (`windows.rs:28`, `unix.rs:28`, `unix_raw.rs:28`), but the engine takes the first DNS answer (`core_engine.rs:41`), which can be IPv6 on dual-stack networks. ICMP then fails with a socket error for the whole session. TCP works with IPv6, so the two layers would disagree.
@@ -183,7 +185,7 @@ ratatui `TestBackend` + snapshot crate (`insta`) for each widget with a fixed `A
 
 ### Needs network or admin (manual, `#[ignore]`)
 
-Real ICMP on Windows (admin) and Linux (`ping_group_range`), real traceroute, the Cloudflare speed test, reverse DNS. Run before a release, not in the loop.
+Real ICMP to remote hosts on Windows and Linux (`ping_group_range`), real traceroute, the Cloudflare speed test, reverse DNS. Run before a release, not in the loop.
 
 ### CI to add alongside
 
