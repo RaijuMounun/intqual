@@ -64,8 +64,9 @@ impl BandwidthWidget {
         if let Some(ref metric) = app.latest_metric {
             let mut perm_denied = false;
             let (icmp_str, icmp_color_override) = match &metric.icmp_ping {
-                Ok(ms) => (format!("{:.1} ms", ms), None),
-                Err(ProbeError::IcmpTimeout) => (
+                None => ("Waiting...".to_string(), None),
+                Some(Ok(ms)) => (format!("{:.1} ms", ms), None),
+                Some(Err(ProbeError::IcmpTimeout)) => (
                     "Timeout".to_string(),
                     Some(
                         Style::default()
@@ -73,7 +74,7 @@ impl BandwidthWidget {
                             .add_modifier(Modifier::BOLD),
                     ),
                 ),
-                Err(ProbeError::PermissionDenied) => {
+                Some(Err(ProbeError::PermissionDenied)) => {
                     perm_denied = true;
                     (
                         "Perm Denied".to_string(),
@@ -84,7 +85,7 @@ impl BandwidthWidget {
                         ),
                     )
                 }
-                Err(e) => (
+                Some(Err(e)) => (
                     e.to_string(),
                     Some(
                         Style::default()
@@ -94,8 +95,9 @@ impl BandwidthWidget {
                 ),
             };
             let tcp_str = match &metric.tcp_ping {
-                Ok(ms) => format!("{:.1} ms", ms),
-                Err(e) => e.to_string(),
+                None => "Waiting...".to_string(),
+                Some(Ok(ms)) => format!("{:.1} ms", ms),
+                Some(Err(e)) => e.to_string(),
             };
 
             let gray = Style::default().fg(Color::DarkGray);

@@ -47,16 +47,40 @@ pub struct NetworkStats {
 
     pub total_count: u64,
     pub loss_count: u64,
+    /// Failed probes that are not loss (see [`is_loss`]): kept out of loss %, but counted
+    /// so the UI can show them instead of letting them vanish.
+    pub error_count: u64,
     pub jitter_sum: f64,
     pub jitter_count: u64,
     pub last_ping: Option<f64>,
 }
 
+/// Whether a failed probe means the packet was lost: a request went out and no valid
+/// reply came back.
+///
+/// Timeouts and ICMP error replies (e.g. destination unreachable from a router) are loss.
+/// A refused TCP connection (`Socket`) is not: the RST is the target answering. Neither are
+/// `PermissionDenied` and the remaining variants, which are local setup or internal
+/// failures. Those go to `error_count` and stay out of the loss % denominator.
+fn is_loss(err: &ProbeError) -> bool {
+    matches!(
+        err,
+        ProbeError::IcmpTimeout | ProbeError::TcpTimeout | ProbeError::IcmpError { .. }
+    )
+}
+
 impl NetworkStats {
+    /// Folds one probe result into the running stats.
+    ///
+    /// Only successes and losses (see [`is_loss`]) are counted in `total_count`; other
+    /// errors are logged and counted in `error_count` so they neither inflate nor dilute
+    /// loss %.
+    /// Jitter follows RFC 3393: it is the difference between two *consecutive* probes that
+    /// both succeeded. Any failure breaks the chain, so no pair spans a gap.
     pub fn update(&mut self, result: &std::result::Result<f64, ProbeError>) {
-        self.total_count += 1;
         match result {
             Ok(ping) => {
+                self.total_count += 1;
                 let p = *ping;
                 if p > self.max_ping {
                     self.max_ping = p;
@@ -75,11 +99,15 @@ impl NetworkStats {
                 }
                 self.last_ping = Some(p);
             }
-            Err(ProbeError::IcmpTimeout) | Err(ProbeError::TcpTimeout) => {
+            Err(e) if is_loss(e) => {
+                self.total_count += 1;
                 self.loss_count += 1;
+                self.last_ping = None;
             }
             Err(e) => {
-                tracing::warn!("UI Parsing fallback triggered: {:?}", e);
+                tracing::warn!("Probe error not counted as loss: {:?}", e);
+                self.error_count += 1;
+                self.last_ping = None;
             }
         }
 
@@ -152,6 +180,18 @@ impl AppState {
         self.latest_metric = None;
     }
 
+    /// Switches to the speed-test screen once `StartBandwidthTest` was sent.
+    /// Only `BandwidthTesting` mode accepts `Bandwidth` events, so the mode has to be
+    /// entered here rather than by the first progress frame.
+    pub fn begin_bandwidth_test(&mut self) {
+        self.last_error = None;
+        self.mode = AppMode::BandwidthTesting(BandwidthProgress::Downloading {
+            current_mbps: 0.0,
+            progress_pct: 0.0,
+        });
+        self.active_widget = ActiveWidget::Bandwidth;
+    }
+
     fn push_chart_data<T>(vec: &mut VecDeque<T>, item: T) {
         vec.push_back(item);
         if vec.len() > HISTORY_SIZE {
@@ -196,26 +236,17 @@ impl AppState {
 
                 self.icmp_stats.update(&result);
 
-                let p_val = match &result {
-                    Ok(p) => *p,
-                    Err(e) => {
-                        tracing::warn!("UI Parsing fallback triggered: {:?}", e);
-                        0.0
-                    }
-                };
-                Self::push_chart_data(&mut self.icmp_data, (sequence_number as f64, p_val));
-
-                if result.is_ok() {
+                // A failed sample is not drawn: plotting it as 0.0 ms (or 0 jitter) would
+                // look like the best reply of the session. The latency chart leaves a gap
+                // at that sequence; the sparkline cannot draw gaps, so it just skips it.
+                if let Ok(ping) = result {
+                    Self::push_chart_data(&mut self.icmp_data, (sequence_number as f64, ping));
                     let j = self.icmp_stats.current_jitter.round() as u64;
                     Self::push_chart_data(&mut self.jitter_history, j);
 
-                    if let Ok(ping) = result
-                        && ping > self.chart_max_ping
-                    {
+                    if ping > self.chart_max_ping {
                         self.chart_max_ping = ping;
                     }
-                } else {
-                    Self::push_chart_data(&mut self.jitter_history, 0);
                 }
 
                 // If this packet fell out of the window and it was the max, recompute
@@ -223,20 +254,17 @@ impl AppState {
                     self.update_chart_max_ping();
                 }
 
-                if let Some(ref mut metric) = self.latest_metric {
-                    metric.sequence_number = sequence_number;
-                    metric.target_ip = target_ip;
-                    metric.icmp_ping = result;
-                    metric.timestamp = timestamp;
-                } else {
-                    self.latest_metric = Some(PingMetrics {
-                        sequence_number,
-                        target_ip,
-                        icmp_ping: result,
-                        tcp_ping: Err(ProbeError::TcpTimeout),
-                        timestamp,
-                    });
-                }
+                let metric = self.latest_metric.get_or_insert_with(|| PingMetrics {
+                    sequence_number,
+                    target_ip: String::new(),
+                    icmp_ping: None,
+                    tcp_ping: None,
+                    timestamp,
+                });
+                metric.sequence_number = sequence_number;
+                metric.target_ip = target_ip;
+                metric.icmp_ping = Some(result);
+                metric.timestamp = timestamp;
 
                 RenderAction::Redraw
             }
@@ -255,43 +283,39 @@ impl AppState {
 
                 self.tcp_stats.update(&result);
 
-                let p_val = match &result {
-                    Ok(p) => *p,
-                    Err(e) => {
-                        tracing::warn!("UI Parsing fallback triggered: {:?}", e);
-                        0.0
+                // Same as ICMP: a failed handshake leaves a gap instead of a 0.0 ms point.
+                if let Ok(ping) = result {
+                    Self::push_chart_data(&mut self.tcp_data, (sequence_number as f64, ping));
+                    if ping > self.chart_max_ping {
+                        self.chart_max_ping = ping;
                     }
-                };
-                Self::push_chart_data(&mut self.tcp_data, (sequence_number as f64, p_val));
-
-                if let Ok(ping) = result
-                    && ping > self.chart_max_ping
-                {
-                    self.chart_max_ping = ping;
                 }
 
                 if self.tcp_data.len() == HISTORY_SIZE {
                     self.update_chart_max_ping();
                 }
 
-                if let Some(ref mut metric) = self.latest_metric {
-                    metric.sequence_number = sequence_number;
-                    metric.target_ip = target_ip;
-                    metric.tcp_ping = result;
-                    metric.timestamp = timestamp;
-                } else {
-                    self.latest_metric = Some(PingMetrics {
-                        sequence_number,
-                        target_ip,
-                        icmp_ping: Err(ProbeError::IcmpTimeout),
-                        tcp_ping: result,
-                        timestamp,
-                    });
-                }
+                let metric = self.latest_metric.get_or_insert_with(|| PingMetrics {
+                    sequence_number,
+                    target_ip: String::new(),
+                    icmp_ping: None,
+                    tcp_ping: None,
+                    timestamp,
+                });
+                metric.sequence_number = sequence_number;
+                metric.target_ip = target_ip;
+                metric.tcp_ping = Some(result);
+                metric.timestamp = timestamp;
 
                 RenderAction::Redraw
             }
             TelemetryEvent::Bandwidth(progress) => {
+                // A frame from a test the user already cancelled (Esc) can still be in the
+                // channel; it must not pull the UI back out of Ping/Traceroute/Error mode.
+                // `begin_bandwidth_test` enters the mode when the user presses 's'.
+                if !matches!(self.mode, AppMode::BandwidthTesting(_)) {
+                    return RenderAction::Skip;
+                }
                 self.last_error = None;
                 if let BandwidthProgress::Finished {
                     download_mbps,
@@ -409,11 +433,15 @@ pub fn run_app(
                     } else if key.code == KeyCode::Char('s') {
                         if !matches!(app.mode, AppMode::BandwidthTesting(_)) {
                             app.last_error = None;
-                            if let Err(e) = cmd_tx.try_send(intqual_core::engine::core_engine::EngineCommand::StartBandwidthTest) {
-                                if matches!(e, tokio::sync::mpsc::error::TrySendError::Closed(_)) {
-                                    break;
+                            match cmd_tx.try_send(EngineCommand::StartBandwidthTest) {
+                                Ok(()) => {
+                                    app.begin_bandwidth_test();
+                                    terminal.draw(|frame| draw_ui(frame, &app))?;
                                 }
-                                tracing::error!("Failed to send EngineCommand: {}", e);
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                                Err(e) => {
+                                    tracing::error!("Failed to send EngineCommand: {}", e);
+                                }
                             }
                         }
                     } else if key.code == KeyCode::Char('t') {
