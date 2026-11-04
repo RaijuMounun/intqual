@@ -136,10 +136,15 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" crates/core/Cargo.toml
+          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" crates/mcp/Cargo.toml
           sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" crates/cli/Cargo.toml
 
       - name: Publish Core to Crates.io
         run: cargo publish -p intqual-core --token ${{ secrets.CRATES_TOKEN }} --allow-dirty
+
+      # The CLI depends on intqual-mcp, so it must be on crates.io first.
+      - name: Publish MCP Server to Crates.io
+        run: cargo publish -p intqual-mcp --token ${{ secrets.CRATES_TOKEN }} --allow-dirty
 
       - name: Publish CLI to Crates.io
         run: cargo publish -p intqual --token ${{ secrets.CRATES_TOKEN }} --allow-dirty
@@ -149,7 +154,7 @@ jobs:
           VERSION=${GITHUB_REF_NAME#v}
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/core/Cargo.toml crates/cli/Cargo.toml
+          git add crates/core/Cargo.toml crates/mcp/Cargo.toml crates/cli/Cargo.toml
           git diff --cached --quiet && echo "No changes to commit" || {
             git commit -m "chore: bump version to $VERSION [skip ci]"
             git push origin HEAD:refs/heads/master

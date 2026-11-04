@@ -62,8 +62,8 @@ does not work, those rows use a short real interval (≤ 20 ms) with a comment s
 | over_budget_request_returns_is_error_not_protocol_error | `Ok(CallToolResult)` with `isError`, not `Err` |
 | dns_failure_returns_is_error_with_kind_dns_resolution | `Source::Network` + `nonexistent.invalid` (offline-safe) |
 | unknown_tool_returns_protocol_error | client gets `Err(ServiceError)` |
-| wrong_argument_type_returns_protocol_error | `count: "x"` rejected by schema |
-| missing_target_returns_protocol_error | same |
+| wrong_argument_type_returns_is_error_invalid_request | `count: "x"` → `isError`, kind `invalid_request` (MCP 2025-11-25: the model can correct itself) |
+| missing_target_returns_is_error_invalid_request | same for a missing `target` |
 | full_loss_ping_is_normal_result_not_error | failing source → `isError: false`, loss 100 |
 
 ### I: concurrency, cancellation, progress

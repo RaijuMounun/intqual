@@ -1,6 +1,6 @@
 mod headless;
 pub mod ui;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 use tokio::sync::mpsc;
 
@@ -8,8 +8,18 @@ use tokio::sync::mpsc;
 /// Using `clap` allows us to define the API declaratively, ensuring POSIX-compliant
 /// argument parsing and auto-generating standard documentation (--help) without manual boilerplate.
 #[derive(Parser, Debug)]
-#[command(author, version, about = "A zero-runtime-dependency asynchronous network analysis engine", long_about = None)]
+#[command(
+    author,
+    version,
+    about = "A zero-runtime-dependency asynchronous network analysis engine",
+    long_about = None,
+    args_conflicts_with_subcommands = true,
+    after_help = "To analyze a host literally named `mcp`, write `intqual -- mcp`."
+)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// The target IP address or hostname to analyze.
     /// Defaults to Google as a highly available edge node for baseline internet connectivity testing.
     #[arg(default_value = "google.com")]
@@ -54,11 +64,58 @@ struct Cli {
     worker_mode: Option<String>,
 }
 
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Run an MCP (Model Context Protocol) server on stdio with the tools `ping`,
+    /// `tcp_latency` and `traceroute`, for AI assistants such as Claude Code.
+    /// Register it with: claude mcp add intqual -- intqual mcp
+    Mcp {
+        /// Serve simulated data instead of real network traffic.
+        #[arg(long)]
+        mock: bool,
+    },
+}
+
+/// `intqual mcp`. stdout is the JSON-RPC stream, so logs go to stderr (hosts collect it into
+/// their MCP logs), never to `intqual.log`: a host may start the server in a directory it
+/// cannot write to. Exit 1 if the server fails to start or stops with an error; 0 when the
+/// host closes stdin.
+async fn run_mcp(mock: bool) -> i32 {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
+    let source = if mock {
+        intqual_core::measure::Source::Mock
+    } else {
+        intqual_core::measure::Source::Network
+    };
+    match intqual_mcp::serve_stdio(intqual_mcp::ServerOptions { source }).await {
+        Ok(()) => 0,
+        Err(e) => {
+            // `serve_stdio` has already logged the cause.
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
 /// The asynchronous application entry point.
 /// #[tokio::main] Initializes the async runtime required for multiplexing concurrent
 /// network operations without allocating a heavy OS thread for each individual connection.
 #[tokio::main]
 async fn main() -> Result<(), ()> {
+    // Parsed before logging starts: `intqual mcp` must not create `intqual.log`.
+    let cli = Cli::parse();
+
+    if let Some(Command::Mcp { mock }) = cli.command {
+        std::process::exit(run_mcp(mock).await);
+    }
+
     let file_appender = tracing_appender::rolling::never(".", "intqual.log");
     let (non_blocking, log_guard) = tracing_appender::non_blocking(file_appender);
 
@@ -69,9 +126,6 @@ async fn main() -> Result<(), ()> {
         )
         .with_writer(non_blocking)
         .init();
-
-    // 1. Parse CLI arguments
-    let cli = Cli::parse();
 
     if let Some(mode) = &cli.worker_mode
         && mode == "traceroute"

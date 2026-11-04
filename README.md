@@ -99,6 +99,25 @@ Options:
   -V, --version              Print version
 ```
 
+### MCP Server (AI assistants)
+
+`intqual mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio,
+so Claude Code, Claude Desktop and other MCP hosts can measure your network. It offers three
+tools: `ping`, `tcp_latency` and `traceroute`. Each one returns the same JSON report as
+`intqual --count N --json`. Speed tests are not exposed. No admin rights are needed on Windows.
+
+Register it with Claude Code:
+
+```bash
+claude mcp add intqual -- intqual mcp
+```
+
+Then ask, for example, "ping google.com with intqual" or "check TCP latency to github.com on
+port 443". Add `--mock` (`intqual mcp --mock`) for simulated data with no network traffic.
+Calls run one at a time and each is limited to 60 seconds. Logs go to stderr (level from
+`RUST_LOG`, default `warn`). On Linux/macOS the traceroute tool needs root and otherwise reports
+`permission_denied`. To analyze a host literally named `mcp`, write `intqual -- mcp`.
+
 ---
 
 ## License

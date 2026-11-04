@@ -128,12 +128,15 @@ Two kinds of failure, as the MCP spec defines them:
 
 - **Tool execution errors** → a result with `isError: true` and one text block holding
   `{"kind": "...", "message": "..."}` (same shape as in the report). Used when `measure` returns
-  `Err` (`invalid_request`, `dns_resolution`, including "no address found") and for the MCP
-  limit checks above. The model sees these and can fix its arguments. The handlers build this
+  `Err` (`invalid_request`, `dns_resolution`, including "no address found"), for the MCP
+  limit checks above, and for arguments that do not deserialize (wrong type, missing `target`:
+  `invalid_request`). MCP 2025-11-25 makes input errors tool errors so the model can correct
+  itself; the handlers deserialize the arguments themselves to keep this one shape (rmcp 3.8
+  would otherwise return plain text). The model sees these and can fix its arguments. The handlers build this
   `CallToolResult` themselves rather than returning `Err(String)`, because rmcp would turn a
   plain string into unstructured text, not this JSON shape.
 - **Protocol errors** (JSON-RPC error) → only for what rmcp itself rejects: unknown tool,
-  malformed JSON, arguments that do not match the input schema.
+  malformed JSON-RPC.
 - Measurement results with loss, timeouts or `permission_denied` are **not** errors: they are a
   normal result whose report says what happened. (A 100 % loss ping is a valid answer.)
 - Cancelled calls: if rmcp still sends a response, it is the partial report with

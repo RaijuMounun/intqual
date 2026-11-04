@@ -1,0 +1,23 @@
+[package]
+name = "intqual-mcp"
+version = "1.3.0"
+edition = "2024"
+authors = ["Eren Keskinoğlu <erenkeskinoglu@outlook.com>"]
+description = "MCP (Model Context Protocol) server for intqual network measurements"
+license = "MIT"
+repository = "https://github.com/RaijuMounun/intqual"
+
+[dependencies]
+intqual-core = { path = "../core", version = "1.3.0", features = ["schema"] }
+rmcp = { version = "3.8.0", features = ["server", "macros", "transport-io"] }
+schemars = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rmcp = { version = "3.8.0", features = ["client", "transport-async-rw"] }
+tokio = { workspace = true, features = ["test-util"] }
