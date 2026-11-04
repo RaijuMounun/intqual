@@ -1,3 +1,4 @@
+mod headless;
 pub mod ui;
 use clap::Parser;
 
@@ -35,6 +36,19 @@ struct Cli {
     #[arg(long)]
     mock: bool,
 
+    /// Headless mode: take N ICMP and N TCP samples, print a summary and exit (no TUI).
+    /// Exit code 0 if any sample succeeded, 1 if none did, 2 if nothing could run.
+    #[arg(short = 'c', long)]
+    count: Option<u32>,
+
+    /// Print the headless result as one JSON document on stdout.
+    #[arg(long, requires = "count")]
+    json: bool,
+
+    /// Also run a traceroute after the samples (headless mode).
+    #[arg(long, requires = "count")]
+    traceroute: bool,
+
     /// Internal worker mode execution flag
     #[arg(long, hide = true)]
     worker_mode: Option<String>,
@@ -46,7 +60,7 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), ()> {
     let file_appender = tracing_appender::rolling::never(".", "intqual.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking, log_guard) = tracing_appender::non_blocking(file_appender);
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -131,6 +145,31 @@ async fn main() -> Result<(), ()> {
                 std::process::exit(1);
             }
         }
+    }
+
+    // Headless branches before the engine and the terminal exist: it never enters the
+    // alternate screen, and stdout carries only the result.
+    if let Some(count) = cli.count {
+        let req = intqual_core::measure::MeasureRequest {
+            target: cli.target,
+            port: cli.port,
+            count,
+            interval: std::time::Duration::from_millis(cli.interval),
+            timeout: std::time::Duration::from_millis(cli.timeout),
+            icmp: true,
+            tcp: true,
+            traceroute: cli.traceroute,
+            max_hops: intqual_core::measure::DEFAULT_MAX_HOPS,
+            source: if cli.mock {
+                intqual_core::measure::Source::Mock
+            } else {
+                intqual_core::measure::Source::Network
+            },
+        };
+        let code = headless::run(&req, cli.json, std::io::stdout(), std::io::stderr()).await;
+        // `process::exit` skips destructors: flush the log writer first.
+        drop(log_guard);
+        std::process::exit(code);
     }
 
     // 2. Establish the telemetry pipeline.
