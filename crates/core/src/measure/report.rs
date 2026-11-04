@@ -2,7 +2,7 @@
 //! of `intqual --json` and of the MCP server, so field names and `null` handling only change
 //! together with `SCHEMA_VERSION`.
 
-use crate::models::ProbeError;
+use crate::models::{ProbeError, TracerouteHop};
 use serde::Serialize;
 
 /// Bumped on any breaking change to the JSON shape below.
@@ -11,6 +11,12 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// Error kind for a sample that never arrived (its telemetry frame was dropped or the probe
 /// stopped). Not a `ProbeError` variant: nothing failed on the wire that we know of.
 pub const DROPPED_KIND: &str = "dropped";
+
+/// Rounds a millisecond value to 3 decimals (1 µs). Raw `f64` timings print as
+/// `82.27239999999999`; nothing finer than a microsecond is meaningful here.
+pub fn round_ms(ms: f64) -> f64 {
+    (ms * 1000.0).round() / 1000.0
+}
 
 /// Where the samples came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -78,7 +84,7 @@ impl Sample {
             Ok(rtt) => Self {
                 seq,
                 timestamp,
-                rtt_ms: Some(*rtt),
+                rtt_ms: Some(round_ms(*rtt)),
                 error: None,
             },
             Err(e) => Self {
@@ -140,10 +146,23 @@ pub struct ReportHop {
     pub icmp_error: Option<String>,
 }
 
+impl ReportHop {
+    /// The report form of a probe hop, with its reverse-DNS name and the RTT rounded.
+    pub fn from_hop(hop: TracerouteHop, hostname: Option<String>) -> Self {
+        Self {
+            hop_number: hop.hop_number,
+            ip_address: hop.ip_address,
+            hostname,
+            avg_rtt_ms: hop.avg_rtt_ms.map(round_ms),
+            is_destination: hop.is_destination,
+            icmp_error: hop.icmp_error,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::TracerouteHop;
     use serde_json::{Value, json};
 
     fn summary() -> Summary {
@@ -222,6 +241,51 @@ mod tests {
             "traceroute": null
         });
         assert_eq!(serde_json::to_value(report()).unwrap(), expected);
+    }
+
+    #[test]
+    fn round_ms_keeps_three_decimals() {
+        assert_eq!(round_ms(82.27239999999999), 82.272);
+        assert_eq!(round_ms(0.0005), 0.001);
+        assert_eq!(round_ms(12.0), 12.0);
+        assert_eq!(round_ms(1.23449), 1.234);
+    }
+
+    #[test]
+    fn sample_rtt_is_rounded_in_json() {
+        let s = Sample::from_result(1, 0, &Ok(82.27239999999999));
+        assert_eq!(s.rtt_ms, Some(82.272));
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(text.contains("\"rtt_ms\":82.272,"), "got {text}");
+    }
+
+    #[test]
+    fn report_hop_from_hop_rounds_rtt_and_keeps_fields() {
+        let hop = TracerouteHop {
+            hop_number: 4,
+            ip_address: Some("192.0.2.9".into()),
+            avg_rtt_ms: Some(7.0006),
+            is_destination: true,
+            icmp_error: Some("Type: 3, Code: 3".into()),
+        };
+        let expected = ReportHop {
+            hop_number: 4,
+            ip_address: Some("192.0.2.9".into()),
+            hostname: Some("host.test".into()),
+            avg_rtt_ms: Some(7.001),
+            is_destination: true,
+            icmp_error: Some("Type: 3, Code: 3".into()),
+        };
+        assert_eq!(ReportHop::from_hop(hop, Some("host.test".into())), expected);
+
+        let silent = TracerouteHop {
+            hop_number: 5,
+            ip_address: None,
+            avg_rtt_ms: None,
+            is_destination: false,
+            icmp_error: None,
+        };
+        assert_eq!(ReportHop::from_hop(silent, None).avg_rtt_ms, None);
     }
 
     #[test]

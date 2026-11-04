@@ -1,6 +1,6 @@
 # Spec: Headless mode (`--count N [--json]`)
 
-Status: **approved** (not implemented) · Date: 2026-11-04 · Scope: all platforms (verified on Windows only; Unix paths
+Status: **implemented** · Date: 2026-11-04 (revised after manual testing, see the end) · Scope: all platforms (verified on Windows only; Unix paths
 compile in CI but are not run by hand).
 
 ## Problem
@@ -153,8 +153,17 @@ form is the output contract, versioned with `schema_version`.
   which ignores non-timeout errors (assessment §5 item 9). `jitter_ms` = mean absolute
   difference between consecutive successful RTTs, same as the TUI. `min/avg/max/jitter` are
   `null` when `received == 0` (and jitter when `received < 2`).
+- **Rounding:** every millisecond value in the report (`rtt_ms`, `min/avg/max/jitter_ms`, hop
+  `avg_rtt_ms`) and `loss_pct` is rounded to 3 decimals (`round_ms`). Raw `f64` timings print as
+  `82.27239999999999`. Summary maths runs on full precision and rounds once at the end.
 - `TracerouteHop` (IPC contract) is not changed; the report has its own hop struct with
   `hostname` added.
+- **`icmp_error` on hops:** `null` for Echo Reply (the destination) and for Time Exceeded in
+  transit (type 11, code 0), which is how every intermediate router normally answers; reporting
+  it made a healthy path look like one error per hop. It stays set for real problems:
+  Destination Unreachable (`"Type: 3, Code: N"`), fragment-reassembly Time Exceeded (code 1)
+  and unknown types. The rule lives in `classify_response` in `probe/traceroute.rs`, so the TUI
+  and the Unix worker's JSON lines follow it too (same field, fewer non-null values).
 
 ### 3. CLI (`crates/cli/src/headless.rs`)
 
@@ -192,6 +201,9 @@ form is the output contract, versioned with `schema_version`.
 - **Exit 2 with `--json`:** stdout still gets one JSON object,
   `{ "schema_version": 1, "target": "...", "error": { "kind", "message" } }`, so a caller that
   always parses stdout keeps working. clap's own usage errors stay plain text on stderr.
+- **JSON style:** both documents (success and exit 2) are pretty-printed with two-space indent,
+  keys in the order shown above. Pretty, not compact: a person reads it as easily as `jq` does,
+  and one style means one parser path.
 
 ### 4. Platform notes
 
@@ -232,3 +244,11 @@ form is the output contract, versioned with `schema_version`.
 
 The manual checks pass in a non-admin shell; build, clippy (`-D warnings`), fmt and tests pass;
 the TUI still opens without `--count`; CI green.
+
+## Revisions
+
+- 2026-11-04, after the first manual run: hop `icmp_error` is `null` for Time Exceeded in
+  transit; millisecond values and `loss_pct` are rounded to 3 decimals; the exit-2 JSON is
+  pretty-printed like the success document. Also fixed outside this spec: the TUI with
+  `--mock` froze on `t` because `MockEngine` ignored `StartTraceroute`; it now simulates the
+  same three hops as `Source::Mock`.

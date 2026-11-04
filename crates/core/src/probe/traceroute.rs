@@ -7,6 +7,26 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Maps one ICMP answer to `(is_destination, icmp_error)`.
+///
+/// Time Exceeded in transit (type 11, code 0) is how every intermediate router answers a
+/// traceroute, so it is not an error: reporting it would make a healthy 18-hop path look like
+/// 18 failures to a script or an AI reading the JSON. Real problems stay visible: Destination
+/// Unreachable, fragment-reassembly Time Exceeded (code 1) and unknown types.
+pub(crate) fn classify_response(response: &IcmpResponse) -> (bool, Option<String>) {
+    match response {
+        IcmpResponse::EchoReply(_) => (true, None),
+        IcmpResponse::TimeExceeded(t) if t.code == 0 => (false, None),
+        IcmpResponse::TimeExceeded(t) => (false, Some(format!("Type: 11, Code: {}", t.code))),
+        IcmpResponse::DestinationUnreachable(d) => {
+            (true, Some(format!("Type: 3, Code: {}", d.code)))
+        }
+        IcmpResponse::Unknown { type_, code } => {
+            (false, Some(format!("Type: {}, Code: {}", type_, code)))
+        }
+    }
+}
+
 pub struct TracerouteProbe {
     pub resolved_addr: SocketAddr,
     pub timeout: Duration,
@@ -71,22 +91,7 @@ impl NetworkProbe for TracerouteProbe {
                 match hop_result {
                     Ok(result) => {
                         tracing::debug!("Received response for TTL={}: {:?}", ttl, result.response);
-                        let (is_dest, icmp_error_msg) = match result.response {
-                            IcmpResponse::EchoReply(r) => {
-                                let _t = r.type_;
-                                let _c = r.code;
-                                (true, None)
-                            }
-                            IcmpResponse::TimeExceeded(t) => {
-                                (false, Some(format!("Type: 11, Code: {}", t.code)))
-                            }
-                            IcmpResponse::DestinationUnreachable(d) => {
-                                (true, Some(format!("Type: 3, Code: {}", d.code)))
-                            }
-                            IcmpResponse::Unknown { type_, code } => {
-                                (false, Some(format!("Type: {}, Code: {}", type_, code)))
-                            }
-                        };
+                        let (is_dest, icmp_error_msg) = classify_response(&result.response);
 
                         rtt_sum += result.rtt_ms;
                         rtt_count += 1;
@@ -173,5 +178,65 @@ impl NetworkProbe for TracerouteProbe {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::icmp::packet::{IcmpDestUnreachable, IcmpEchoReply, IcmpTimeExceeded};
+
+    fn time_exceeded(code: u8) -> IcmpResponse {
+        IcmpResponse::TimeExceeded(IcmpTimeExceeded {
+            code,
+            original_identifier: 1,
+            original_sequence: 2,
+        })
+    }
+
+    #[test]
+    fn classify_time_exceeded_in_transit_is_a_normal_hop() {
+        assert_eq!(classify_response(&time_exceeded(0)), (false, None));
+    }
+
+    #[test]
+    fn classify_fragment_reassembly_time_exceeded_stays_an_error() {
+        assert_eq!(
+            classify_response(&time_exceeded(1)),
+            (false, Some("Type: 11, Code: 1".to_string()))
+        );
+    }
+
+    #[test]
+    fn classify_echo_reply_is_the_destination_without_error() {
+        let reply = IcmpResponse::EchoReply(IcmpEchoReply {
+            type_: 0,
+            code: 0,
+            identifier: 1,
+            sequence_number: 2,
+        });
+        assert_eq!(classify_response(&reply), (true, None));
+    }
+
+    #[test]
+    fn classify_destination_unreachable_keeps_the_error() {
+        let unreachable = IcmpResponse::DestinationUnreachable(IcmpDestUnreachable {
+            code: 3,
+            original_identifier: 1,
+            original_sequence: 2,
+        });
+        assert_eq!(
+            classify_response(&unreachable),
+            (true, Some("Type: 3, Code: 3".to_string()))
+        );
+    }
+
+    #[test]
+    fn classify_unknown_type_keeps_the_error() {
+        let unknown = IcmpResponse::Unknown { type_: 5, code: 1 };
+        assert_eq!(
+            classify_response(&unknown),
+            (false, Some("Type: 5, Code: 1".to_string()))
+        );
     }
 }

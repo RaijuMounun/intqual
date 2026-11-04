@@ -2,6 +2,8 @@
 //! deadlines are exact and nothing waits on a real clock.
 
 use super::*;
+use crate::models::TracerouteHop;
+use std::net::Ipv4Addr;
 use std::sync::Mutex;
 
 const T0: u64 = 1_762_250_000;
@@ -343,6 +345,8 @@ enum TraceMode {
     FailAfterOne,
     /// Two hops, then waits for cancel.
     StallAfterTwo,
+    /// One destination hop with an unrounded RTT.
+    FractionalRtt,
 }
 
 struct TestSources {
@@ -437,6 +441,16 @@ impl Sources for TestSources {
                 TraceMode::FailAfterOne => {
                     let _ = tx.send(TelemetryEvent::TracerouteHop(hop(1))).await;
                     Err(ProbeError::PermissionDenied)
+                }
+                TraceMode::FractionalRtt => {
+                    let dest = TracerouteHop {
+                        avg_rtt_ms: Some(1.00049),
+                        is_destination: true,
+                        ..hop(1)
+                    };
+                    let _ = tx.send(TelemetryEvent::TracerouteHop(dest)).await;
+                    let _ = tx.send(TelemetryEvent::TracerouteComplete).await;
+                    Ok(())
                 }
                 TraceMode::StallAfterTwo => {
                     let _ = tx.send(TelemetryEvent::TracerouteHop(hop(1))).await;
@@ -609,6 +623,21 @@ async fn measure_traceroute_only_reports_null_icmp_tcp() {
     let trace = report.traceroute.unwrap();
     assert!(trace.complete);
     assert_eq!(trace.hops.len(), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_rounds_hop_rtt_in_the_report() {
+    let r = MeasureRequest {
+        traceroute: true,
+        ..req(1)
+    };
+    let sources = TestSources::new(LatencyMode::Mock, TraceMode::FractionalRtt);
+    let report = run_with(&r, &sources, CancellationToken::new())
+        .await
+        .unwrap();
+    let trace = report.traceroute.unwrap();
+    assert_eq!(trace.hops[0].avg_rtt_ms, Some(1.0));
+    assert!(trace.complete);
 }
 
 // ---- real DNS, offline-safe ----

@@ -1,4 +1,4 @@
-use super::report::{Sample, Summary};
+use super::report::{Sample, Summary, round_ms};
 
 /// Aggregates one probe's samples. Every error counts as loss, including `socket` (a refused
 /// port) and `dropped` frames: unlike the TUI's `NetworkStats`, a script asking "did this
@@ -28,14 +28,15 @@ pub fn summarize(samples: &[Sample]) -> Summary {
         diffs / (rtts.len() - 1) as f64
     });
 
+    // Computed on full precision, rounded once at the end.
     Summary {
         sent,
         received,
-        loss_pct,
-        min_ms,
-        avg_ms,
-        max_ms,
-        jitter_ms,
+        loss_pct: round_ms(loss_pct),
+        min_ms: min_ms.map(round_ms),
+        avg_ms: avg_ms.map(round_ms),
+        max_ms: max_ms.map(round_ms),
+        jitter_ms: jitter_ms.map(round_ms),
     }
 }
 
@@ -73,9 +74,39 @@ mod tests {
         assert_eq!((s.sent, s.received), (3, 3));
         assert_eq!(s.loss_pct, 0.0);
         assert!(close(s.min_ms, 10.0));
-        assert!(close(s.avg_ms, 70.0 / 3.0));
+        assert_eq!(s.avg_ms, Some(23.333), "rounded to 3 decimals");
         assert!(close(s.max_ms, 40.0));
         assert!(close(s.jitter_ms, 15.0));
+    }
+
+    #[test]
+    fn summarize_rounds_stats_to_three_decimals() {
+        let s = summarize(&[
+            ok(1, 1.0),
+            ok(2, 2.0),
+            ok(3, 2.0),
+            failed(4, &ProbeError::IcmpTimeout),
+        ]);
+        assert_eq!(s.avg_ms, Some(1.667));
+        assert_eq!(s.jitter_ms, Some(0.5));
+        assert_eq!(s.loss_pct, 25.0);
+
+        let third = summarize(&[ok(1, 1.0), ok(2, 1.0), failed(3, &ProbeError::IcmpTimeout)]);
+        assert_eq!(third.loss_pct, 33.333);
+
+        let two_thirds = summarize(&[
+            ok(1, 1.0),
+            failed(2, &ProbeError::IcmpTimeout),
+            failed(3, &ProbeError::IcmpTimeout),
+        ]);
+        assert_eq!(two_thirds.loss_pct, 66.667, "rounds half up, not truncates");
+
+        // Raw: min 1.0004, max 3.0007, avg 2.000366.., jitter 1.00015.
+        let raw = summarize(&[ok(1, 1.0004), ok(2, 2.0), ok(3, 3.0007)]);
+        assert_eq!(raw.min_ms, Some(1.0));
+        assert_eq!(raw.max_ms, Some(3.001));
+        assert_eq!(raw.avg_ms, Some(2.0));
+        assert_eq!(raw.jitter_ms, Some(1.0));
     }
 
     #[test]

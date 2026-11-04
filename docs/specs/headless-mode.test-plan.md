@@ -127,3 +127,29 @@ Rules (CLAUDE.md): no admin, no internet; loopback is fine. New async tests use
 - `cfg(unix)` behaviour (`permission_denied`, root traceroute): not compiled on Windows; CI
   compiles it, behaviour stays manual.
 - Injection points are proposals; the agent did not read probe internals.
+
+## Revision 2026-11-04 (after the first manual run)
+
+| Test | Proves |
+|-|-|
+| classify_time_exceeded_in_transit_is_a_normal_hop | Type 11 code 0 → `(false, None)`: not an error |
+| classify_fragment_reassembly_time_exceeded_stays_an_error | Type 11 code 1 keeps `"Type: 11, Code: 1"` |
+| classify_echo_reply_is_the_destination_without_error | Echo Reply → `(true, None)` |
+| classify_destination_unreachable_keeps_the_error | Type 3 → destination, error kept |
+| classify_unknown_type_keeps_the_error | unknown type → error kept |
+| round_ms_keeps_three_decimals | `82.27239999999999` → `82.272` |
+| sample_rtt_is_rounded_in_json | `rtt_ms` serializes as `82.272` |
+| report_hop_from_hop_rounds_rtt_and_keeps_fields | hop RTT rounded, other fields unchanged |
+| summarize_rounds_stats_to_three_decimals | avg `1.667`, loss `33.333` (`summarize_all_ok…` now expects avg `23.333`) |
+| run_json_success_and_error_are_both_pretty_printed | both documents start `{
+  "schema_version": 1,` |
+| start_traceroute_emits_hops_dns_and_complete | `MockEngine` on Pause + StartTraceroute: 3 hops, a hostname each, Complete, no pings meanwhile |
+| resume_after_traceroute_restarts_pings | Resume (Esc/Enter) after the trace → pings again |
+| stop_during_traceroute_ends_it_and_closes_the_channel | Stop mid-trace → channel closes, no hops |
+| second_start_traceroute_replaces_the_first | two StartTraceroute → exactly 3 hops, one Complete |
+| measure_rounds_hop_rtt_in_the_report | a `1.00049` ms hop is `1.0` in the report (rounding wired into `collect_traceroute`) |
+| resume_during_traceroute_stops_remaining_hops | Resume mid-trace → no more hops or Complete leak into the ping view |
+
+Manual: `intqual --mock`, press `t` (three hops with hostnames), then Esc (chart moves again);
+`intqual google.com --count 5 --json --traceroute` (intermediate hops have `icmp_error: null`,
+values have at most 3 decimals).

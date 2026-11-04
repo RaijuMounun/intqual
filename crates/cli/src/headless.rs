@@ -4,6 +4,7 @@
 use intqual_core::measure::{
     ErrorInfo, MeasureReport, MeasureRequest, ProbeReport, SCHEMA_VERSION, measure,
 };
+use serde::Serialize;
 use std::io::Write;
 use tokio_util::sync::CancellationToken;
 
@@ -14,6 +15,15 @@ pub const EXIT_NO_REPLY: i32 = 1;
 /// Nothing could be measured: invalid request, DNS failure, no address. Same code clap uses
 /// for usage errors.
 pub const EXIT_CANNOT_RUN: i32 = 2;
+
+/// The stdout document for exit 2 under `--json`, so a caller that always parses stdout keeps
+/// working. A struct (not `json!`) so the keys keep the spec's order, like the success document.
+#[derive(Serialize)]
+struct ErrorDocument<'a> {
+    schema_version: u32,
+    target: &'a str,
+    error: ErrorInfo,
+}
 
 /// Exit code for a finished measurement. Traceroute results never change it.
 pub fn exit_code(report: &MeasureReport) -> i32 {
@@ -141,12 +151,14 @@ pub async fn run(
         Err(e) => {
             // `measure` already logged the cause.
             let written = if json {
-                let doc = serde_json::json!({
-                    "schema_version": SCHEMA_VERSION,
-                    "target": req.target,
-                    "error": ErrorInfo::from(&e),
-                });
-                writeln!(out, "{doc}")
+                let doc = ErrorDocument {
+                    schema_version: SCHEMA_VERSION,
+                    target: &req.target,
+                    error: ErrorInfo::from(&e),
+                };
+                serde_json::to_string_pretty(&doc)
+                    .map_err(std::io::Error::other)
+                    .and_then(|doc| writeln!(out, "{doc}"))
             } else {
                 writeln!(err, "intqual: {e}")
             };
@@ -359,6 +371,34 @@ traceroute error: permission_denied: Permission Denied / Unsupported
             traceroute: false,
             max_hops: 30,
             source: Source::Mock,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_json_success_and_error_are_both_pretty_printed() {
+        let ok_req = MeasureRequest {
+            count: 1,
+            ..invalid_req()
+        };
+        for req in [ok_req, invalid_req()] {
+            let mut out = Vec::new();
+            run(&req, true, &mut out, std::io::sink()).await;
+            let text = String::from_utf8(out).unwrap();
+            assert!(
+                text.starts_with("{\n  \"schema_version\": 1,\n"),
+                "count={}: not pretty-printed: {text}",
+                req.count
+            );
+            assert!(text.ends_with("}\n"));
+            // Same key order as the spec: schema_version, target, then the rest.
+            let target = text.find("\"target\"").unwrap();
+            assert!(text.find("\"schema_version\"").unwrap() < target);
+            let next = if req.count == 0 {
+                "\"error\""
+            } else {
+                "\"resolved_ip\""
+            };
+            assert!(target < text.find(next).unwrap(), "key order: {text}");
         }
     }
 

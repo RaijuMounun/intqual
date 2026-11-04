@@ -13,12 +13,13 @@ pub use report::{
 };
 pub use summary::summarize;
 
-use crate::models::{ProbeError, TracerouteHop};
+use crate::engine::mock::{MOCK_HOPS, MOCK_IP, mock_hop};
+use crate::models::ProbeError;
 use crate::probe::{
     NetworkProbe, TelemetryEvent, ping::PingProbe, tcp::TcpProbe, traceroute::TracerouteProbe,
 };
 use std::future::Future;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -37,8 +38,6 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_HOPS_LIMIT: u8 = 64;
 /// Same capacity as the TUI pipeline.
 const CHANNEL_CAPACITY: usize = 100;
-/// TEST-NET-1 (RFC 5737): never routed, so mock output can never be mistaken for a real host.
-const MOCK_IP: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeasureRequest {
@@ -404,14 +403,7 @@ async fn collect_traceroute<S: Sources>(
         match event {
             Some(TelemetryEvent::TracerouteHop(hop)) => {
                 let ip: Option<IpAddr> = hop.ip_address.as_deref().and_then(|s| s.parse().ok());
-                let mut report_hop = ReportHop {
-                    hop_number: hop.hop_number,
-                    ip_address: hop.ip_address,
-                    hostname: None,
-                    avg_rtt_ms: hop.avg_rtt_ms,
-                    is_destination: hop.is_destination,
-                    icmp_error: hop.icmp_error,
-                };
+                let mut report_hop = ReportHop::from_hop(hop, None);
                 if let Some(ip) = ip {
                     tokio::select! {
                         biased;
@@ -553,13 +545,6 @@ pub(crate) struct MockSources {
     pub(crate) clock: Clock,
 }
 
-/// The three hops of the mock traceroute: `(ip, hostname, rtt_ms)`; the last is `MOCK_IP`.
-const MOCK_HOPS: [(Ipv4Addr, &str, f64); 3] = [
-    (Ipv4Addr::new(192, 0, 2, 254), "gateway.mock", 1.0),
-    (Ipv4Addr::new(192, 0, 2, 100), "isp.mock", 5.0),
-    (MOCK_IP, "target.mock", 10.0),
-];
-
 impl Sources for MockSources {
     async fn resolve(&self, req: &MeasureRequest) -> Result<SocketAddr, ProbeError> {
         Ok(SocketAddr::new(IpAddr::V4(MOCK_IP), req.port))
@@ -632,13 +617,7 @@ impl Sources for MockSources {
                 if cancel.is_cancelled() {
                     return Ok(());
                 }
-                let hop = TracerouteHop {
-                    hop_number: (i + 1) as u8,
-                    ip_address: Some(ip.to_string()),
-                    avg_rtt_ms: Some(*rtt),
-                    is_destination: *ip == MOCK_IP,
-                    icmp_error: None,
-                };
+                let hop = mock_hop(i, *ip, *rtt);
                 if tx.send(TelemetryEvent::TracerouteHop(hop)).await.is_err() {
                     return Ok(());
                 }
