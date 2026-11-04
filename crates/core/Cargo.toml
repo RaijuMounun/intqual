@@ -23,6 +23,7 @@ async-stream = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { version = "1", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
@@ -30,3 +31,7 @@ tracing-subscriber = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper"] }
+
+[features]
+# JSON Schema derives on the report types, for the MCP server.
+schema = ["dep:schemars"]

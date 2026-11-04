@@ -3,7 +3,7 @@
 //! together with `SCHEMA_VERSION`.
 
 use crate::models::{ProbeError, TracerouteHop};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Bumped on any breaking change to the JSON shape below.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -19,7 +19,8 @@ pub fn round_ms(ms: f64) -> f64 {
 }
 
 /// Where the samples came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
     /// Real ICMP/TCP traffic.
@@ -28,7 +29,8 @@ pub enum Source {
     Mock,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MeasureReport {
     pub schema_version: u32,
     pub target: String,
@@ -51,13 +53,15 @@ pub struct MeasureReport {
     pub traceroute: Option<TracerouteReport>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProbeReport {
     pub summary: Summary,
     pub samples: Vec<Sample>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Summary {
     pub sent: u32,
     pub received: u32,
@@ -68,7 +72,8 @@ pub struct Summary {
     pub jitter_ms: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Sample {
     pub seq: u32,
     /// UNIX seconds.
@@ -111,7 +116,8 @@ impl Sample {
 }
 
 /// Serializable form of a `ProbeError`: match on `kind`, show `message`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ErrorInfo {
     pub kind: String,
     pub message: String,
@@ -126,7 +132,8 @@ impl From<&ProbeError> for ErrorInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TracerouteReport {
     /// The last hop reached the destination.
     pub complete: bool,
@@ -136,7 +143,8 @@ pub struct TracerouteReport {
 
 /// A traceroute hop as reported to callers. Separate from `TracerouteHop`, which is the
 /// worker-process IPC contract and has no hostname.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ReportHop {
     pub hop_number: u8,
     pub ip_address: Option<String>,
