@@ -26,6 +26,33 @@ pub enum ProbeError {
     PacketError(String),
     #[error("IPC Communication Error: {0}")]
     IpcError(String),
+    /// A `MeasureRequest` outside the accepted bounds. Shared by the headless CLI (exit 2)
+    /// and the MCP server, so both reject the same inputs with the same message.
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+}
+
+impl ProbeError {
+    /// Stable snake_case name of the variant. `ProbeError` wraps `io::Error`, so it cannot be
+    /// serialized; machine-readable output stores this name plus the `Display` text instead.
+    /// Scripts match on these names, so they must never change once released.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::IcmpTimeout => "icmp_timeout",
+            Self::IcmpError { .. } => "icmp_error",
+            Self::TcpTimeout => "tcp_timeout",
+            Self::Socket(_) => "socket",
+            Self::PermissionDenied => "permission_denied",
+            Self::DnsResolution(_) => "dns_resolution",
+            Self::BandwidthTestFailed(_) => "bandwidth_test_failed",
+            Self::RateLimited(_) => "rate_limited",
+            Self::TimeSyncError => "time_sync_error",
+            Self::ThreadPanic(_) => "thread_panic",
+            Self::PacketError(_) => "packet_error",
+            Self::IpcError(_) => "ipc_error",
+            Self::InvalidRequest(_) => "invalid_request",
+        }
+    }
 }
 
 /// The canonical data contract between the Network Engine (Producer) and the UI (Consumer).
@@ -90,4 +117,56 @@ pub struct TracerouteHop {
     pub avg_rtt_ms: Option<f64>,
     pub is_destination: bool,
     pub icmp_error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn all_variants() -> Vec<(ProbeError, &'static str)> {
+        vec![
+            (ProbeError::IcmpTimeout, "icmp_timeout"),
+            (ProbeError::IcmpError { type_: 3, code: 1 }, "icmp_error"),
+            (ProbeError::TcpTimeout, "tcp_timeout"),
+            (
+                ProbeError::Socket(std::io::Error::from(std::io::ErrorKind::ConnectionRefused)),
+                "socket",
+            ),
+            (ProbeError::PermissionDenied, "permission_denied"),
+            (ProbeError::DnsResolution("x".into()), "dns_resolution"),
+            (
+                ProbeError::BandwidthTestFailed("x".into()),
+                "bandwidth_test_failed",
+            ),
+            (ProbeError::RateLimited("x".into()), "rate_limited"),
+            (ProbeError::TimeSyncError, "time_sync_error"),
+            (ProbeError::ThreadPanic("x".into()), "thread_panic"),
+            (ProbeError::PacketError("x".into()), "packet_error"),
+            (ProbeError::IpcError("x".into()), "ipc_error"),
+            (ProbeError::InvalidRequest("x".into()), "invalid_request"),
+        ]
+    }
+
+    #[test]
+    fn probe_error_kind_names_every_variant() {
+        let variants = all_variants();
+        assert_eq!(variants.len(), 13);
+        for (err, expected) in &variants {
+            assert_eq!(err.kind(), *expected, "wrong kind for {err:?}");
+        }
+    }
+
+    #[test]
+    fn probe_error_kind_names_are_unique_snake_case() {
+        let names: Vec<&str> = all_variants().iter().map(|(e, _)| e.kind()).collect();
+        let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(unique.len(), 13, "duplicate kind names: {names:?}");
+        for name in &names {
+            assert!(
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{name} is not snake_case"
+            );
+        }
+        assert!(!unique.contains(crate::measure::DROPPED_KIND));
+    }
 }

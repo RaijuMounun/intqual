@@ -21,17 +21,17 @@ impl Default for MockEngine {
     }
 }
 
-impl MockEngine {
-    /// Deterministic latency pattern: a sawtooth around 20 ms, with every 20th ICMP probe lost.
-    fn sample(sequence: u64) -> (Result<f64, ProbeError>, Result<f64, ProbeError>) {
-        let icmp_ms = 20.0 + ((sequence * 7) % 13) as f64;
-        let icmp = if sequence.is_multiple_of(20) {
-            Err(ProbeError::IcmpTimeout)
-        } else {
-            Ok(icmp_ms)
-        };
-        (icmp, Ok(icmp_ms + 5.0))
-    }
+/// Deterministic latency pattern: a sawtooth around 20 ms, with every 20th ICMP probe lost.
+/// Shared by `MockEngine` (TUI `--mock`) and `measure`'s `Source::Mock`, so both show the same
+/// numbers. Returns `(icmp, tcp)`.
+pub fn sample(sequence: u64) -> (Result<f64, ProbeError>, Result<f64, ProbeError>) {
+    let icmp_ms = 20.0 + ((sequence * 7) % 13) as f64;
+    let icmp = if sequence.is_multiple_of(20) {
+        Err(ProbeError::IcmpTimeout)
+    } else {
+        Ok(icmp_ms)
+    };
+    (icmp, Ok(icmp_ms + 5.0))
 }
 
 impl NetworkEngine for MockEngine {
@@ -63,7 +63,7 @@ impl NetworkEngine for MockEngine {
                     }
                     _ = interval_timer.tick(), if !paused => {
                         sequence += 1;
-                        let (icmp, tcp) = Self::sample(sequence);
+                        let (icmp, tcp) = sample(sequence);
                         let timestamp = crate::utils::current_timestamp().unwrap_or_default();
 
                         let events = [
@@ -131,11 +131,19 @@ mod tests {
 
     #[test]
     fn sample_loses_every_twentieth_icmp_probe() {
-        assert!(matches!(
-            MockEngine::sample(20).0,
-            Err(ProbeError::IcmpTimeout)
-        ));
-        assert!(MockEngine::sample(19).0.is_ok());
-        assert!(MockEngine::sample(20).1.is_ok());
+        assert!(matches!(sample(20).0, Err(ProbeError::IcmpTimeout)));
+        assert!(sample(19).0.is_ok());
+        assert!(sample(20).1.is_ok());
+    }
+
+    #[test]
+    fn sample_returns_sawtooth_values() {
+        let values = |seq| {
+            let (icmp, tcp) = sample(seq);
+            (icmp.ok(), tcp.ok())
+        };
+        assert_eq!(values(1), (Some(27.0), Some(32.0)));
+        // (13 * 7) % 13 == 0: the sawtooth wraps back to its 20 ms floor.
+        assert_eq!(values(13), (Some(20.0), Some(25.0)));
     }
 }
