@@ -181,6 +181,11 @@ values have at most 3 decimals).
 `render_text_prints_header_and_two_summary_lines` now expects `jitter - ms` for ICMP
 `[11, err, 13]` (no adjacent pair).
 
-Not done: `cli_closed_port_exits_1`. The CLI always runs ICMP and TCP together, and ICMP to
-`127.0.0.1` succeeds on Windows, so a closed loopback port exits 0. It needs a TCP-only switch
-or another target; open question.
+`cli_closed_port_exits_1` needed a TCP-only run (loopback ICMP always succeeds), so the CLI got
+`--no-icmp` (spec revision 2026-11-05):
+
+| Test | Proves |
+|-|-|
+| cli_closed_port_exits_1 | `127.0.0.1 --port <closed> --count 1 --no-icmp --json` → exit 1, `icmp: null`, one `socket` error |
+| cli_no_icmp_reports_null_icmp | `--no-icmp --mock` → `icmp: null`, TCP samples present |
+| cli_json_without_count_exits_2 | now also covers `--no-icmp` without `--count` |

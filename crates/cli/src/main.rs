@@ -59,6 +59,11 @@ struct Cli {
     #[arg(long, requires = "count")]
     traceroute: bool,
 
+    /// Skip the ICMP samples and measure TCP only (headless mode). For hosts that drop ping,
+    /// and so the exit code reflects the TCP port alone.
+    #[arg(long, requires = "count")]
+    no_icmp: bool,
+
     /// Internal worker mode execution flag
     #[arg(long, hide = true)]
     worker_mode: Option<String>,
@@ -210,7 +215,7 @@ async fn main() -> Result<(), ()> {
             count,
             interval: std::time::Duration::from_millis(cli.interval),
             timeout: std::time::Duration::from_millis(cli.timeout),
-            icmp: true,
+            icmp: !cli.no_icmp,
             tcp: true,
             traceroute: cli.traceroute,
             max_hops: intqual_core::measure::DEFAULT_MAX_HOPS,
