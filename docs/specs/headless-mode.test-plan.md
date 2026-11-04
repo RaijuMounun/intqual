@@ -135,7 +135,7 @@ Rules (CLAUDE.md): no admin, no internet; loopback is fine. New async tests use
 | classify_time_exceeded_in_transit_is_a_normal_hop | Type 11 code 0 → `(false, None)`: not an error |
 | classify_fragment_reassembly_time_exceeded_stays_an_error | Type 11 code 1 keeps `"Type: 11, Code: 1"` |
 | classify_echo_reply_is_the_destination_without_error | Echo Reply → `(true, None)` |
-| classify_destination_unreachable_keeps_the_error | Type 3 → destination, error kept |
+| classify_destination_unreachable_keeps_the_error | Type 3 → destination, error kept (replaced below) |
 | classify_unknown_type_keeps_the_error | unknown type → error kept |
 | round_ms_keeps_three_decimals | `82.27239999999999` → `82.272` |
 | sample_rtt_is_rounded_in_json | `rtt_ms` serializes as `82.272` |
@@ -153,3 +153,34 @@ Rules (CLAUDE.md): no admin, no internet; loopback is fine. New async tests use
 Manual: `intqual --mock`, press `t` (three hops with hostnames), then Esc (chart moves again);
 `intqual google.com --count 5 --json --traceroute` (intermediate hops have `icmp_error: null`,
 values have at most 3 decimals).
+
+## Revision 2026-11-04 (test review gaps)
+
+| Test | Proves |
+|-|-|
+| summarize_jitter_does_not_bridge_failed_samples | `[10, err, 20]` → jitter `null`; `[10, 20, err, 40, 45]` → `7.5` (renamed from `summarize_jitter_skips_failed_samples`) |
+| summarize_jitter_uses_absolute_consecutive_differences | `[10, 30, 20, 40]` → `16.667` (a missing `abs` gives 10) |
+| measure_pre_cancelled_returns_interrupted_empty_report | cancelled before the call → `Ok`, interrupted, no samples, no hops, no time spent |
+| measure_stops_latency_probes_on_every_exit | latency token cancelled after a cancel, the deadline and an early channel close |
+| measure_probe_channel_closed_early_marks_rest_dropped | sources gone after seq 1 → seq 2..=count `dropped`, returns at once |
+| measure_fatal_event_is_logged_and_collection_continues | `Fatal` is logged at ERROR and all samples still arrive |
+| measure_ignores_duplicate_and_out_of_range_seq | seq 0, a second seq 1 and seq `count + 1` change nothing |
+| measure_reverse_dns_timeout_leaves_hostname_null | a stalled lookup costs one `timeout` per hop, hostname `null` |
+| measure_hop_without_ip_skips_reverse_dns | a `*` hop gets no lookup |
+| measure_cancel_during_reverse_dns_keeps_hop | cancel mid-lookup keeps the hop, `complete: false` |
+| measure_traceroute_task_panic_is_thread_panic_error | a panicking traceroute task → `error.kind = "thread_panic"` |
+| measure_unreachable_from_router_is_not_complete | a hop with `is_destination: false` and a Type 3 error → `complete: false` |
+| classify_destination_unreachable_from_a_router_stops_without_reaching | router's Type 3 → stop, not reached (was: reached) |
+| classify_destination_unreachable_from_the_target_counts_as_reached | target's own Type 3 → reached |
+| next_identifier_never_repeats_within_a_process | 10 000 calls, 10 000 distinct identifiers |
+| next_identifier_is_distinct_across_threads | 8 threads × 500 calls, no repeat |
+| measure_loopback_two_concurrent_measures_do_not_cross_talk | two concurrent measures (TCP, plus ICMP on Windows) each get exactly their own `count` samples |
+| report_json_matches_golden_with_traceroute | full document with transit hop (`icmp_error: null`, hostname set), `*` hop and destination |
+| cli_headless_does_not_enter_alternate_screen | now also exit 0 and non-empty stdout |
+
+`render_text_prints_header_and_two_summary_lines` now expects `jitter - ms` for ICMP
+`[11, err, 13]` (no adjacent pair).
+
+Not done: `cli_closed_port_exits_1`. The CLI always runs ICMP and TCP together, and ICMP to
+`127.0.0.1` succeeds on Windows, so a closed loopback port exits 0. It needs a TCP-only switch
+or another target; open question.

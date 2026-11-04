@@ -2,28 +2,57 @@ use super::{NetworkProbe, TelemetryEvent};
 use crate::models::{ProbeError, TracerouteHop};
 use crate::network::icmp::packet::IcmpResponse;
 use crate::network::icmp::{IcmpProvider, TracerouteIcmpProvider};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-/// Maps one ICMP answer to `(is_destination, icmp_error)`.
+/// What one ICMP answer means for the trace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HopVerdict {
+    /// The destination itself answered; becomes `TracerouteHop::is_destination`.
+    pub reached: bool,
+    /// No point probing further TTLs.
+    pub stop: bool,
+    pub icmp_error: Option<String>,
+}
+
+/// Classifies one ICMP answer from `responder` to a probe aimed at `target`.
 ///
 /// Time Exceeded in transit (type 11, code 0) is how every intermediate router answers a
 /// traceroute, so it is not an error: reporting it would make a healthy 18-hop path look like
 /// 18 failures to a script or an AI reading the JSON. Real problems stay visible: Destination
 /// Unreachable, fragment-reassembly Time Exceeded (code 1) and unknown types.
-pub(crate) fn classify_response(response: &IcmpResponse) -> (bool, Option<String>) {
+///
+/// Destination Unreachable always ends the trace, but it only counts as reaching the
+/// destination when the target sent it (protocol/port unreachable from the host itself). From
+/// a router it means the path is broken there, so the trace must not report `complete`.
+pub(crate) fn classify_response(
+    response: &IcmpResponse,
+    responder: IpAddr,
+    target: IpAddr,
+) -> HopVerdict {
+    let verdict = |reached, stop, icmp_error| HopVerdict {
+        reached,
+        stop,
+        icmp_error,
+    };
     match response {
-        IcmpResponse::EchoReply(_) => (true, None),
-        IcmpResponse::TimeExceeded(t) if t.code == 0 => (false, None),
-        IcmpResponse::TimeExceeded(t) => (false, Some(format!("Type: 11, Code: {}", t.code))),
-        IcmpResponse::DestinationUnreachable(d) => {
-            (true, Some(format!("Type: 3, Code: {}", d.code)))
+        IcmpResponse::EchoReply(_) => verdict(true, true, None),
+        IcmpResponse::TimeExceeded(t) if t.code == 0 => verdict(false, false, None),
+        IcmpResponse::TimeExceeded(t) => {
+            verdict(false, false, Some(format!("Type: 11, Code: {}", t.code)))
         }
-        IcmpResponse::Unknown { type_, code } => {
-            (false, Some(format!("Type: {}, Code: {}", type_, code)))
-        }
+        IcmpResponse::DestinationUnreachable(d) => verdict(
+            responder == target,
+            true,
+            Some(format!("Type: 3, Code: {}", d.code)),
+        ),
+        IcmpResponse::Unknown { type_, code } => verdict(
+            false,
+            false,
+            Some(format!("Type: {}, Code: {}", type_, code)),
+        ),
     }
 }
 
@@ -65,6 +94,7 @@ impl NetworkProbe for TracerouteProbe {
             let mut rtt_count = 0;
             let mut last_responder = None;
             let mut is_dest_reached = false;
+            let mut stop = false;
             let mut fatal_error = None;
             let mut last_icmp_err = None;
 
@@ -91,7 +121,13 @@ impl NetworkProbe for TracerouteProbe {
                 match hop_result {
                     Ok(result) => {
                         tracing::debug!("Received response for TTL={}: {:?}", ttl, result.response);
-                        let (is_dest, icmp_error_msg) = classify_response(&result.response);
+                        let verdict = classify_response(
+                            &result.response,
+                            result.responder_ip,
+                            self.resolved_addr.ip(),
+                        );
+                        stop |= verdict.stop;
+                        let (is_dest, icmp_error_msg) = (verdict.reached, verdict.icmp_error);
 
                         rtt_sum += result.rtt_ms;
                         rtt_count += 1;
@@ -161,7 +197,7 @@ impl NetworkProbe for TracerouteProbe {
             // DNS resolution is handled asynchronously by the parent process (TUI)
             // in accordance with the Principle of Least Privilege.
 
-            if is_dest_reached {
+            if is_dest_reached || stop {
                 break;
             }
         }
@@ -185,6 +221,18 @@ impl NetworkProbe for TracerouteProbe {
 mod tests {
     use super::*;
     use crate::network::icmp::packet::{IcmpDestUnreachable, IcmpEchoReply, IcmpTimeExceeded};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    const TARGET: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+    const ROUTER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 254));
+
+    fn verdict(reached: bool, stop: bool, icmp_error: Option<&str>) -> HopVerdict {
+        HopVerdict {
+            reached,
+            stop,
+            icmp_error: icmp_error.map(str::to_string),
+        }
+    }
 
     fn time_exceeded(code: u8) -> IcmpResponse {
         IcmpResponse::TimeExceeded(IcmpTimeExceeded {
@@ -194,16 +242,27 @@ mod tests {
         })
     }
 
+    fn unreachable(code: u8) -> IcmpResponse {
+        IcmpResponse::DestinationUnreachable(IcmpDestUnreachable {
+            code,
+            original_identifier: 1,
+            original_sequence: 2,
+        })
+    }
+
     #[test]
     fn classify_time_exceeded_in_transit_is_a_normal_hop() {
-        assert_eq!(classify_response(&time_exceeded(0)), (false, None));
+        assert_eq!(
+            classify_response(&time_exceeded(0), ROUTER, TARGET),
+            verdict(false, false, None)
+        );
     }
 
     #[test]
     fn classify_fragment_reassembly_time_exceeded_stays_an_error() {
         assert_eq!(
-            classify_response(&time_exceeded(1)),
-            (false, Some("Type: 11, Code: 1".to_string()))
+            classify_response(&time_exceeded(1), ROUTER, TARGET),
+            verdict(false, false, Some("Type: 11, Code: 1"))
         );
     }
 
@@ -215,19 +274,28 @@ mod tests {
             identifier: 1,
             sequence_number: 2,
         });
-        assert_eq!(classify_response(&reply), (true, None));
+        assert_eq!(
+            classify_response(&reply, TARGET, TARGET),
+            verdict(true, true, None)
+        );
     }
 
+    /// A router saying "host unreachable" ends the trace, but the destination was not
+    /// reached: `complete` must stay false.
     #[test]
-    fn classify_destination_unreachable_keeps_the_error() {
-        let unreachable = IcmpResponse::DestinationUnreachable(IcmpDestUnreachable {
-            code: 3,
-            original_identifier: 1,
-            original_sequence: 2,
-        });
+    fn classify_destination_unreachable_from_a_router_stops_without_reaching() {
         assert_eq!(
-            classify_response(&unreachable),
-            (true, Some("Type: 3, Code: 3".to_string()))
+            classify_response(&unreachable(1), ROUTER, TARGET),
+            verdict(false, true, Some("Type: 3, Code: 1"))
+        );
+    }
+
+    /// The target itself answering "unreachable" (protocol or port) means the packet got there.
+    #[test]
+    fn classify_destination_unreachable_from_the_target_counts_as_reached() {
+        assert_eq!(
+            classify_response(&unreachable(3), TARGET, TARGET),
+            verdict(true, true, Some("Type: 3, Code: 3"))
         );
     }
 
@@ -235,8 +303,8 @@ mod tests {
     fn classify_unknown_type_keeps_the_error() {
         let unknown = IcmpResponse::Unknown { type_: 5, code: 1 };
         assert_eq!(
-            classify_response(&unknown),
-            (false, Some("Type: 5, Code: 1".to_string()))
+            classify_response(&unknown, ROUTER, TARGET),
+            verdict(false, false, Some("Type: 5, Code: 1"))
         );
     }
 }

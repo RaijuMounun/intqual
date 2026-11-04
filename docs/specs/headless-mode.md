@@ -84,7 +84,12 @@ pub struct Progress { pub phase: Phase, pub done: u32, pub total: u32 } // Phase
   failure (for example `PermissionDenied` on Unix without root) goes into `traceroute.error` and
   any hops already received are kept. It never spawns `sudo`. Each hop with an IP gets a
   reverse-DNS lookup (`dns-lookup` in `spawn_blocking`, bounded by `timeout`); a failed or slow
-  lookup gives `hostname: null`. Bound: `max_hops × 3 × timeout` plus DNS.
+  lookup gives `hostname: null`; a hop with no responder gets no lookup. Bound:
+  `max_hops × 3 × timeout` plus DNS. `complete` is `true` only when the last hop is the
+  destination: an Echo Reply, or Destination Unreachable sent by the target itself. A router's
+  Destination Unreachable ends the trace with `complete: false` and its `icmp_error` kept.
+- Each probe gets its own ICMP identifier from a process-wide counter
+  (`network::icmp::next_identifier`), so concurrent `measure` calls (MCP) never share one.
 - `cancel` stops everything; `measure` then returns `Ok` with what it has and
   `interrupted: true`. Samples not taken are omitted (not `dropped`), so `sent` is the number
   actually taken. If cancel arrives during traceroute, the hops received so far are kept with
@@ -135,7 +140,7 @@ form is the output contract, versioned with `schema_version`.
 
 ```jsonc
 "traceroute": {
-  "complete": true,                          // reached the destination
+  "complete": true,                          // the destination itself answered
   "error": null,                             // or { "kind": ..., "message": ... }
   "hops": [ { "hop_number": 1, "ip_address": "192.168.1.1", "hostname": "router.lan",
               "avg_rtt_ms": 1.2, "is_destination": false, "icmp_error": null } ]
@@ -149,10 +154,12 @@ form is the output contract, versioned with `schema_version`.
   Scripts should match on `kind`, never on `message`.
 - **Summary maths** is one pure function, `summarize(&[Sample]) -> Summary`:
   `received` = samples with `rtt_ms`; `loss_pct = (sent - received) / sent × 100`; every error
-  counts as loss, including `socket` (refused port). This differs from the TUI's `NetworkStats`,
-  which ignores non-timeout errors (assessment §5 item 9). `jitter_ms` = mean absolute
-  difference between consecutive successful RTTs, same as the TUI. `min/avg/max/jitter` are
-  `null` when `received == 0` (and jitter when `received < 2`).
+  counts as loss, including `socket` (refused port), as `ping` does ("+N errors, 100% loss").
+  The TUI's `NetworkStats` intentionally differs: it ignores non-timeout errors (assessment §5
+  item 9). `jitter_ms` = mean absolute difference over pairs of *adjacent* samples that both
+  succeeded (RFC 3393, same as the TUI): a failure breaks the chain, so `[10, err, 20]` has no
+  pair. `min/avg/max` are `null` when `received == 0`; `jitter_ms` is `null` when no adjacent
+  pair succeeded.
 - **Rounding:** every millisecond value in the report (`rtt_ms`, `min/avg/max/jitter_ms`, hop
   `avg_rtt_ms`) and `loss_pct` is rounded to 3 decimals (`round_ms`). Raw `f64` timings print as
   `82.27239999999999`. Summary maths runs on full precision and rounds once at the end.
@@ -252,3 +259,7 @@ the TUI still opens without `--count`; CI green.
   pretty-printed like the success document. Also fixed outside this spec: the TUI with
   `--mock` froze on `t` because `MockEngine` ignored `StartTraceroute`; it now simulates the
   same three hops as `Source::Mock`.
+- 2026-11-04, after the test review: jitter pairs only adjacent successes (it used to bridge
+  failed samples, unlike the TUI); a router's Destination Unreachable no longer counts as reaching
+  the destination (`is_destination: false`, `complete: false`; the probe still stops there); ICMP
+  identifiers come from a process-wide counter instead of the clock's nanoseconds.

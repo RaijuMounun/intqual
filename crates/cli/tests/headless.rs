@@ -120,6 +120,8 @@ fn cli_headless_does_not_enter_alternate_screen() {
         &["--count", "2", "--mock", "--interval", "10", "--json"][..],
     ] {
         let o = intqual(args);
+        assert_eq!(o.status.code(), Some(0), "{args:?}");
+        assert!(!o.stdout.is_empty(), "{args:?}: the result goes to stdout");
         assert!(!stdout(&o).contains("\x1b[?1049h"), "{args:?}");
         assert!(
             !stdout(&o).contains('\x1b'),

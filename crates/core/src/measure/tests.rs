@@ -5,6 +5,7 @@ use super::*;
 use crate::models::TracerouteHop;
 use std::net::Ipv4Addr;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const T0: u64 = 1_762_250_000;
 
@@ -336,6 +337,19 @@ enum LatencyMode {
     Mock,
     /// Sends seq 1 for each probe, then holds the channel open and sends nothing more.
     StallAfterFirst,
+    /// Sends seq 1 for each probe, then drops its sender: the channel closes early.
+    CloseAfterFirst,
+    /// A `Fatal` event first, then the normal mock samples.
+    FatalThenMock,
+    /// seq 0, seq 1, a second seq 1, seq `count + 1`, then seq 2..=count, for each probe.
+    DuplicatesAndOutOfRange,
+}
+
+#[derive(Clone, Copy)]
+enum DnsMode {
+    Mock,
+    /// Never answers; only the timeout or a cancel ends the lookup.
+    Stall,
 }
 
 #[derive(Clone, Copy)]
@@ -347,12 +361,20 @@ enum TraceMode {
     StallAfterTwo,
     /// One destination hop with an unrounded RTT.
     FractionalRtt,
+    /// The traceroute task panics.
+    Panic,
+    /// A hop with no responder, then the destination.
+    SilentThenDest,
+    /// A transit hop, then a router answering Destination Unreachable, then Complete.
+    UnreachableFromRouter,
 }
 
 struct TestSources {
     mock: MockSources,
     latency: LatencyMode,
     trace: TraceMode,
+    dns: DnsMode,
+    dns_lookups: AtomicUsize,
     /// The latency probes' token, to check they were stopped before the traceroute started.
     latency_token: Mutex<Option<CancellationToken>>,
     /// Set by `traceroute()`: was the latency token already cancelled?
@@ -365,9 +387,45 @@ impl TestSources {
             mock: MockSources { clock: fixed_clock },
             latency,
             trace,
+            dns: DnsMode::Mock,
+            dns_lookups: AtomicUsize::new(0),
             latency_token: Mutex::new(None),
             latency_stopped_before_trace: Mutex::new(None),
         }
+    }
+
+    fn with_dns(self, dns: DnsMode) -> Self {
+        Self { dns, ..self }
+    }
+
+    fn lookups(&self) -> usize {
+        self.dns_lookups.load(Ordering::SeqCst)
+    }
+
+    fn latency_token_cancelled(&self) -> bool {
+        self.latency_token
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+    }
+}
+
+fn ping(seq: u64, rtt: f64) -> TelemetryEvent {
+    TelemetryEvent::Ping {
+        sequence_number: seq,
+        target_ip: String::new(),
+        result: Ok(rtt),
+        timestamp: T0,
+    }
+}
+
+fn tcp(seq: u64, rtt: f64) -> TelemetryEvent {
+    TelemetryEvent::Tcp {
+        sequence_number: seq,
+        target_ip: String::new(),
+        result: Ok(rtt),
+        timestamp: T0,
     }
 }
 
@@ -398,22 +456,33 @@ impl Sources for TestSources {
             LatencyMode::Mock => self.mock.start_latency(addr, req, tx, cancel),
             LatencyMode::StallAfterFirst => {
                 tokio::spawn(async move {
-                    let ping = TelemetryEvent::Ping {
-                        sequence_number: 1,
-                        target_ip: String::new(),
-                        result: Ok(10.0),
-                        timestamp: T0,
-                    };
-                    let tcp = TelemetryEvent::Tcp {
-                        sequence_number: 1,
-                        target_ip: String::new(),
-                        result: Ok(12.0),
-                        timestamp: T0,
-                    };
-                    let _ = tx.send(ping).await;
-                    let _ = tx.send(tcp).await;
+                    let _ = tx.send(ping(1, 10.0)).await;
+                    let _ = tx.send(tcp(1, 12.0)).await;
                     cancel.cancelled().await;
                     drop(tx);
+                });
+            }
+            LatencyMode::CloseAfterFirst => {
+                tokio::spawn(async move {
+                    let _ = tx.send(ping(1, 10.0)).await;
+                    let _ = tx.send(tcp(1, 12.0)).await;
+                });
+            }
+            LatencyMode::FatalThenMock => {
+                let fatal = TelemetryEvent::Fatal(ProbeError::PermissionDenied);
+                assert!(tx.try_send(fatal).is_ok());
+                self.mock.start_latency(addr, req, tx, cancel);
+            }
+            LatencyMode::DuplicatesAndOutOfRange => {
+                let count = u64::from(req.count);
+                tokio::spawn(async move {
+                    let mut seqs = vec![(0, 99.0), (1, 10.0), (1, 77.0), (count + 1, 88.0)];
+                    seqs.extend((2..=count).map(|s| (s, 10.0 + s as f64)));
+                    for (seq, rtt) in seqs {
+                        let _ = tx.send(ping(seq, rtt)).await;
+                        let _ = tx.send(tcp(seq, rtt)).await;
+                    }
+                    cancel.cancelled().await;
                 });
             }
         }
@@ -452,6 +521,34 @@ impl Sources for TestSources {
                     let _ = tx.send(TelemetryEvent::TracerouteComplete).await;
                     Ok(())
                 }
+                TraceMode::Panic => panic!("traceroute task blew up"),
+                TraceMode::SilentThenDest => {
+                    let silent = TracerouteHop {
+                        ip_address: None,
+                        avg_rtt_ms: None,
+                        ..hop(1)
+                    };
+                    let dest = TracerouteHop {
+                        hop_number: 2,
+                        ip_address: Some(MOCK_IP.to_string()),
+                        is_destination: true,
+                        ..hop(2)
+                    };
+                    let _ = tx.send(TelemetryEvent::TracerouteHop(silent)).await;
+                    let _ = tx.send(TelemetryEvent::TracerouteHop(dest)).await;
+                    let _ = tx.send(TelemetryEvent::TracerouteComplete).await;
+                    Ok(())
+                }
+                TraceMode::UnreachableFromRouter => {
+                    let unreachable = TracerouteHop {
+                        icmp_error: Some("Type: 3, Code: 1".to_string()),
+                        ..hop(2)
+                    };
+                    let _ = tx.send(TelemetryEvent::TracerouteHop(hop(1))).await;
+                    let _ = tx.send(TelemetryEvent::TracerouteHop(unreachable)).await;
+                    let _ = tx.send(TelemetryEvent::TracerouteComplete).await;
+                    Ok(())
+                }
                 TraceMode::StallAfterTwo => {
                     let _ = tx.send(TelemetryEvent::TracerouteHop(hop(1))).await;
                     let _ = tx.send(TelemetryEvent::TracerouteHop(hop(2))).await;
@@ -463,7 +560,11 @@ impl Sources for TestSources {
     }
 
     async fn reverse_dns(&self, ip: IpAddr) -> Option<String> {
-        self.mock.reverse_dns(ip).await
+        self.dns_lookups.fetch_add(1, Ordering::SeqCst);
+        match self.dns {
+            DnsMode::Mock => self.mock.reverse_dns(ip).await,
+            DnsMode::Stall => std::future::pending().await,
+        }
     }
 }
 
@@ -640,9 +741,262 @@ async fn measure_rounds_hop_rtt_in_the_report() {
     assert!(trace.complete);
 }
 
+fn cancel_after(cancel: &CancellationToken, after: Duration) {
+    let canceller = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(after).await;
+        canceller.cancel();
+    });
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_pre_cancelled_returns_interrupted_empty_report() {
+    let r = MeasureRequest {
+        traceroute: true,
+        ..req(5)
+    };
+    let sources = TestSources::new(LatencyMode::Mock, TraceMode::Mock);
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let start = Instant::now();
+    let report = run_with(&r, &sources, cancel).await.unwrap();
+    assert_eq!(start.elapsed(), Duration::ZERO);
+    assert!(report.interrupted);
+    for probe in [report.icmp.unwrap(), report.tcp.unwrap()] {
+        assert!(probe.samples.is_empty(), "{:?}", probe.samples);
+        assert_eq!((probe.summary.sent, probe.summary.received), (0, 0));
+    }
+    let trace = report.traceroute.unwrap();
+    assert!(trace.hops.is_empty());
+    assert!(!trace.complete);
+    assert_eq!(*sources.latency_stopped_before_trace.lock().unwrap(), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_stops_latency_probes_on_every_exit() {
+    // Cancelled by the caller.
+    let sources = TestSources::new(LatencyMode::Mock, TraceMode::Mock);
+    let cancel = CancellationToken::new();
+    cancel_after(&cancel, Duration::from_millis(250));
+    let report = run_with(&req(10), &sources, cancel).await.unwrap();
+    assert!(report.interrupted);
+    assert!(sources.latency_token_cancelled(), "after cancel");
+
+    // Deadline: the source stalls and only stops when its token fires.
+    let sources = TestSources::new(LatencyMode::StallAfterFirst, TraceMode::Mock);
+    run_with(&req(3), &sources, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(sources.latency_token_cancelled(), "after the deadline");
+
+    // The source closed its channel early.
+    let sources = TestSources::new(LatencyMode::CloseAfterFirst, TraceMode::Mock);
+    run_with(&req(3), &sources, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(sources.latency_token_cancelled(), "after an early close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_probe_channel_closed_early_marks_rest_dropped() {
+    let r = req(4);
+    let sources = TestSources::new(LatencyMode::CloseAfterFirst, TraceMode::Mock);
+    let start = Instant::now();
+    let report = run_with(&r, &sources, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(start.elapsed(), Duration::ZERO, "no wait for the deadline");
+    assert!(!report.interrupted);
+    for probe in [report.icmp.unwrap(), report.tcp.unwrap()] {
+        assert_eq!((probe.summary.sent, probe.summary.received), (4, 1));
+        assert_eq!(errors_of(&probe, DROPPED_KIND), 3);
+        let seqs: Vec<u32> = probe.samples.iter().map(|s| s.seq).collect();
+        assert_eq!(seqs, [1, 2, 3, 4]);
+    }
+}
+
+/// Collects `tracing` output written while the guard lives (current thread only, which is
+/// where a `#[tokio::test]` runs every task).
+#[derive(Clone, Default)]
+struct LogBuf(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl LogBuf {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+fn capture_logs() -> (LogBuf, tracing::subscriber::DefaultGuard) {
+    let buf = LogBuf::default();
+    let writer = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .finish();
+    (buf, tracing::subscriber::set_default(subscriber))
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_fatal_event_is_logged_and_collection_continues() {
+    let (logs, _guard) = capture_logs();
+    let sources = TestSources::new(LatencyMode::FatalThenMock, TraceMode::Mock);
+    let report = run_with(&req(3), &sources, CancellationToken::new())
+        .await
+        .unwrap();
+    for probe in [report.icmp.unwrap(), report.tcp.unwrap()] {
+        assert_eq!((probe.summary.sent, probe.summary.received), (3, 3));
+    }
+    let text = logs.text();
+    assert!(
+        text.contains("ERROR") && text.contains("fatal error") && text.contains("Permission"),
+        "logs: {text}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_ignores_duplicate_and_out_of_range_seq() {
+    let r = req(3);
+    let sources = TestSources::new(LatencyMode::DuplicatesAndOutOfRange, TraceMode::Mock);
+    let report = run_with(&r, &sources, CancellationToken::new())
+        .await
+        .unwrap();
+    for probe in [report.icmp.unwrap(), report.tcp.unwrap()] {
+        let got: Vec<(u32, Option<f64>)> =
+            probe.samples.iter().map(|s| (s.seq, s.rtt_ms)).collect();
+        // seq 0 and seq 4 are dropped, the second seq 1 does not overwrite the first.
+        assert_eq!(got, [(1, Some(10.0)), (2, Some(12.0)), (3, Some(13.0))]);
+        assert_eq!((probe.summary.sent, probe.summary.received), (3, 3));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_reverse_dns_timeout_leaves_hostname_null() {
+    let r = MeasureRequest {
+        traceroute: true,
+        ..req(1)
+    };
+    let sources = TestSources::new(LatencyMode::Mock, TraceMode::Mock).with_dns(DnsMode::Stall);
+    let start = Instant::now();
+    let report = run_with(&r, &sources, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(start.elapsed(), r.timeout * 3, "one timeout per hop");
+    assert!(!report.interrupted);
+    let trace = report.traceroute.unwrap();
+    assert!(trace.complete);
+    assert_eq!(trace.hops.len(), 3);
+    assert!(trace.hops.iter().all(|h| h.hostname.is_none()));
+    assert!(trace.hops.iter().all(|h| h.ip_address.is_some()));
+    assert_eq!(sources.lookups(), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_hop_without_ip_skips_reverse_dns() {
+    let r = MeasureRequest {
+        traceroute: true,
+        ..req(1)
+    };
+    let sources = TestSources::new(LatencyMode::Mock, TraceMode::SilentThenDest);
+    let report = run_with(&r, &sources, CancellationToken::new())
+        .await
+        .unwrap();
+    let trace = report.traceroute.unwrap();
+    assert_eq!(trace.hops.len(), 2);
+    assert_eq!(
+        (&trace.hops[0].ip_address, &trace.hops[0].hostname),
+        (&None, &None)
+    );
+    assert_eq!(trace.hops[1].hostname.as_deref(), Some("target.mock"));
+    assert_eq!(
+        sources.lookups(),
+        1,
+        "only the hop with an address is looked up"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_cancel_during_reverse_dns_keeps_hop() {
+    let r = MeasureRequest {
+        traceroute: true,
+        timeout: Duration::from_secs(10),
+        ..req(1)
+    };
+    let sources = TestSources::new(LatencyMode::Mock, TraceMode::Mock).with_dns(DnsMode::Stall);
+    let cancel = CancellationToken::new();
+    cancel_after(&cancel, Duration::from_secs(1));
+    let start = Instant::now();
+    let report = run_with(&r, &sources, cancel).await.unwrap();
+    assert_eq!(
+        start.elapsed(),
+        Duration::from_secs(1),
+        "the cancel cut the lookup short"
+    );
+    assert!(report.interrupted);
+    let trace = report.traceroute.unwrap();
+    assert!(!trace.complete);
+    assert_eq!(trace.hops.len(), 1);
+    assert_eq!(trace.hops[0].ip_address.as_deref(), Some("192.0.2.254"));
+    assert_eq!(trace.hops[0].hostname, None);
+    assert_eq!(sources.lookups(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_traceroute_task_panic_is_thread_panic_error() {
+    let r = MeasureRequest {
+        traceroute: true,
+        ..req(2)
+    };
+    let sources = TestSources::new(LatencyMode::Mock, TraceMode::Panic);
+    let report = run_with(&r, &sources, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!report.interrupted);
+    assert_eq!(report.icmp.unwrap().samples.len(), 2);
+    let trace = report.traceroute.unwrap();
+    assert_eq!(
+        trace.error.map(|e| e.kind),
+        Some("thread_panic".to_string())
+    );
+    assert!(trace.hops.is_empty());
+    assert!(!trace.complete);
+}
+
+/// `complete` means the destination answered. A router's Destination Unreachable ends the
+/// probe (`TracerouteComplete`) but its hop is not the destination.
+#[tokio::test(start_paused = true)]
+async fn measure_unreachable_from_router_is_not_complete() {
+    let r = MeasureRequest {
+        traceroute: true,
+        ..req(1)
+    };
+    let sources = TestSources::new(LatencyMode::Mock, TraceMode::UnreachableFromRouter);
+    let report = run_with(&r, &sources, CancellationToken::new())
+        .await
+        .unwrap();
+    let trace = report.traceroute.unwrap();
+    assert_eq!(trace.hops.len(), 2);
+    assert!(!trace.complete);
+    assert!(trace.error.is_none());
+    assert_eq!(
+        trace.hops[1].icmp_error.as_deref(),
+        Some("Type: 3, Code: 1")
+    );
+}
+
 // ---- real DNS, offline-safe ----
 
-/// `.invalid` is reserved (RFC 6761) and never resolves, online or offline.
+/// `.invalid` is reserved (RFC 6761) and never resolves, online or offline. Some ISP or
+/// captive-portal resolvers hijack NXDOMAIN; on such a network this test fails.
 #[tokio::test]
 async fn measure_unresolvable_target_returns_dns_error() {
     let r = MeasureRequest {

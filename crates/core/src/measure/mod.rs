@@ -486,7 +486,7 @@ impl Sources for NetworkSources {
                 addr,
                 req.interval,
                 req.timeout,
-                icmp_identifier(),
+                crate::network::icmp::next_identifier(),
             );
             let (tx, cancel) = (tx.clone(), cancel.clone());
             tokio::spawn(async move {
@@ -512,7 +512,12 @@ impl Sources for NetworkSources {
         tx: mpsc::Sender<TelemetryEvent>,
         cancel: CancellationToken,
     ) -> impl Future<Output = Result<(), ProbeError>> + Send + 'static {
-        let mut probe = TracerouteProbe::new(addr, req.timeout, req.max_hops, icmp_identifier());
+        let mut probe = TracerouteProbe::new(
+            addr,
+            req.timeout,
+            req.max_hops,
+            crate::network::icmp::next_identifier(),
+        );
         async move { probe.run(tx, cancel).await }
     }
 
@@ -529,14 +534,6 @@ impl Sources for NetworkSources {
             }
         }
     }
-}
-
-/// Per-process ICMP identifier, derived from the clock like the engine does.
-fn icmp_identifier() -> u16 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| (d.subsec_nanos() % 65535) as u16)
-        .unwrap_or_default()
 }
 
 /// `Source::Mock`: no traffic, no DNS. Samples come from `engine::mock::sample`, paced by

@@ -244,6 +244,82 @@ mod tests {
     }
 
     #[test]
+    fn report_json_matches_golden_with_traceroute() {
+        let mut r = report();
+        r.tcp = None;
+        r.traceroute = Some(TracerouteReport {
+            complete: true,
+            error: None,
+            hops: vec![
+                ReportHop::from_hop(
+                    TracerouteHop {
+                        hop_number: 1,
+                        ip_address: Some("192.0.2.254".into()),
+                        avg_rtt_ms: Some(1.23456),
+                        is_destination: false,
+                        icmp_error: None,
+                    },
+                    Some("gateway.test".into()),
+                ),
+                ReportHop::from_hop(
+                    TracerouteHop {
+                        hop_number: 2,
+                        ip_address: None,
+                        avg_rtt_ms: None,
+                        is_destination: false,
+                        icmp_error: None,
+                    },
+                    None,
+                ),
+                ReportHop::from_hop(
+                    TracerouteHop {
+                        hop_number: 3,
+                        ip_address: Some("192.0.2.1".into()),
+                        avg_rtt_ms: Some(10.0),
+                        is_destination: true,
+                        icmp_error: None,
+                    },
+                    Some("target.test".into()),
+                ),
+            ],
+        });
+        let expected = json!({
+            "schema_version": 1,
+            "target": "example.test",
+            "resolved_ip": "192.0.2.1",
+            "port": 443,
+            "count": 2, "interval_ms": 500, "timeout_ms": 1000,
+            "source": "mock",
+            "started_at": 1_762_250_000u64,
+            "duration_ms": 500,
+            "interrupted": false,
+            "icmp": {
+                "summary": { "sent": 2, "received": 1, "loss_pct": 50.0, "min_ms": 12.0,
+                             "avg_ms": 12.0, "max_ms": 12.0, "jitter_ms": null },
+                "samples": [
+                    { "seq": 1, "timestamp": 1_762_250_000u64, "rtt_ms": 12.0, "error": null },
+                    { "seq": 2, "timestamp": 1_762_250_000u64, "rtt_ms": null,
+                      "error": { "kind": "icmp_timeout", "message": "ICMP Timeout" } }
+                ]
+            },
+            "tcp": null,
+            "traceroute": {
+                "complete": true,
+                "error": null,
+                "hops": [
+                    { "hop_number": 1, "ip_address": "192.0.2.254", "hostname": "gateway.test",
+                      "avg_rtt_ms": 1.235, "is_destination": false, "icmp_error": null },
+                    { "hop_number": 2, "ip_address": null, "hostname": null,
+                      "avg_rtt_ms": null, "is_destination": false, "icmp_error": null },
+                    { "hop_number": 3, "ip_address": "192.0.2.1", "hostname": "target.test",
+                      "avg_rtt_ms": 10.0, "is_destination": true, "icmp_error": null }
+                ]
+            }
+        });
+        assert_eq!(serde_json::to_value(&r).unwrap(), expected);
+    }
+
+    #[test]
     fn round_ms_keeps_three_decimals() {
         assert_eq!(round_ms(82.27239999999999), 82.272);
         assert_eq!(round_ms(0.0005), 0.001);

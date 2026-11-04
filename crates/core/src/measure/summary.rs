@@ -22,11 +22,13 @@ pub fn summarize(samples: &[Sample]) -> Summary {
         (Some(min), Some(avg), Some(max))
     };
 
-    // Mean absolute difference of consecutive successful RTTs, same as the TUI.
-    let jitter_ms = (rtts.len() >= 2).then(|| {
-        let diffs: f64 = rtts.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
-        diffs / (rtts.len() - 1) as f64
-    });
+    // RFC 3393, same as the TUI: mean absolute difference of *adjacent* samples that both
+    // succeeded. A failure breaks the chain, so [10, err, 20] has no pair and no jitter.
+    let (diff_sum, pairs) = samples
+        .windows(2)
+        .filter_map(|w| Some((w[1].rtt_ms? - w[0].rtt_ms?).abs()))
+        .fold((0.0, 0u32), |(sum, n), d| (sum + d, n + 1));
+    let jitter_ms = (pairs > 0).then(|| diff_sum / f64::from(pairs));
 
     // Computed on full precision, rounded once at the end.
     Summary {
@@ -158,13 +160,31 @@ mod tests {
     }
 
     #[test]
-    fn summarize_jitter_skips_failed_samples() {
+    fn summarize_jitter_does_not_bridge_failed_samples() {
+        // RFC 3393 / the TUI: only adjacent successes form a pair.
         let s = summarize(&[
             ok(1, 10.0),
             failed(2, &ProbeError::IcmpTimeout),
             ok(3, 20.0),
         ]);
-        assert!(close(s.jitter_ms, 10.0));
+        assert_eq!(s.jitter_ms, None);
+
+        // Pairs (1,2) and (4,5): (10 + 5) / 2. The 20 -> 40 jump across the gap is ignored.
+        let s = summarize(&[
+            ok(1, 10.0),
+            ok(2, 20.0),
+            failed(3, &ProbeError::IcmpTimeout),
+            ok(4, 40.0),
+            ok(5, 45.0),
+        ]);
+        assert_eq!(s.jitter_ms, Some(7.5));
+    }
+
+    #[test]
+    fn summarize_jitter_uses_absolute_consecutive_differences() {
+        // |30-10| + |20-30| + |40-20| = 50 over 3 pairs; without `abs` it would be 10.
+        let s = summarize(&[ok(1, 10.0), ok(2, 30.0), ok(3, 20.0), ok(4, 40.0)]);
+        assert_eq!(s.jitter_ms, Some(16.667));
     }
 
     #[test]

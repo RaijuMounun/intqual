@@ -303,7 +303,7 @@ mod tests {
         let text = render_text(&report(Some(icmp), Some(tcp)));
         let expected = "\
 intqual example.test (192.0.2.1), port 443, 3 samples
-ICMP  sent 3   received 2   loss 33.3%  min/avg/max 11.0/12.0/13.0 ms  jitter 2.0 ms
+ICMP  sent 3   received 2   loss 33.3%  min/avg/max 11.0/12.0/13.0 ms  jitter - ms
 TCP   sent 3   received 3   loss 0.0%   min/avg/max 14.0/15.3/17.0 ms  jitter 1.5 ms
 errors: icmp_timeout ×1
 ";

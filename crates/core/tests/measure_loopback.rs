@@ -71,6 +71,39 @@ async fn measure_closed_port_gives_socket_errors_and_full_loss() {
     }
 }
 
+/// The MCP server runs measures concurrently; each must get only its own samples.
+#[tokio::test]
+async fn measure_loopback_two_concurrent_measures_do_not_cross_talk() {
+    let mut ports = Vec::new();
+    for _ in 0..2 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        ports.push(listener.local_addr().unwrap().port());
+        tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+    }
+    let request = |port, count| MeasureRequest {
+        // ICMP to loopback needs no admin only on Windows (ICMP Helper API).
+        icmp: cfg!(windows),
+        ..loopback(port, count, Duration::from_secs(2))
+    };
+    let (a, b) = (request(ports[0], 4), request(ports[1], 6));
+    let (ra, rb) = tokio::join!(
+        measure(&a, CancellationToken::new(), None),
+        measure(&b, CancellationToken::new(), None)
+    );
+    for (report, count) in [(ra.unwrap(), 4u32), (rb.unwrap(), 6)] {
+        let probes = [report.icmp, report.tcp];
+        for probe in probes.into_iter().flatten() {
+            let seqs: Vec<u32> = probe.samples.iter().map(|s| s.seq).collect();
+            assert_eq!(seqs, (1..=count).collect::<Vec<_>>());
+            assert_eq!(
+                probe.summary.received, count,
+                "samples: {:?}",
+                probe.samples
+            );
+        }
+    }
+}
+
 /// The ICMP Helper API answers 127.0.0.1 without admin.
 #[cfg(windows)]
 #[tokio::test]
