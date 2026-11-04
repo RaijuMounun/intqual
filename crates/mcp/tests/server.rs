@@ -260,6 +260,43 @@ async fn list_tools_have_input_and_output_schema() {
 }
 
 #[tokio::test]
+async fn input_schema_ranges_match_limit_constants() {
+    use intqual_mcp::args::{
+        COUNT_RANGE, INTERVAL_MS_RANGE, MAX_HOPS_RANGE, PORT_RANGE, TIMEOUT_MS_RANGE,
+    };
+    let (client, _server) = connect(mock()).await;
+    let mut checked = 0;
+    for tool in client.list_all_tools().await.unwrap() {
+        let input = Value::Object((*tool.input_schema).clone());
+        assert_eq!(
+            input["additionalProperties"], false,
+            "{} accepts unknown args",
+            tool.name
+        );
+        for (arg, schema) in input["properties"].as_object().expect("properties") {
+            let range = match arg.as_str() {
+                "target" => continue,
+                "count" => &COUNT_RANGE,
+                "interval_ms" => &INTERVAL_MS_RANGE,
+                "timeout_ms" => &TIMEOUT_MS_RANGE,
+                "max_hops" => &MAX_HOPS_RANGE,
+                "port" => &PORT_RANGE,
+                other => panic!("{}: argument {other} has no limit constant", tool.name),
+            };
+            assert_eq!(
+                schema["minimum"],
+                json!(range.start()),
+                "{}.{arg}",
+                tool.name
+            );
+            assert_eq!(schema["maximum"], json!(range.end()), "{}.{arg}", tool.name);
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 3 + 4 + 2);
+}
+
+#[tokio::test]
 async fn tool_descriptions_mention_real_traffic_and_duration() {
     let (client, _server) = connect(mock()).await;
     for tool in client.list_all_tools().await.unwrap() {
@@ -403,15 +440,87 @@ async fn over_budget_request_returns_is_error_not_protocol_error() {
 }
 
 #[tokio::test]
-async fn dns_failure_returns_is_error_with_kind_dns_resolution() {
-    let (client, _server) = connect(IntqualServer::new(Source::Network)).await;
+async fn over_budget_traceroute_returns_is_error_with_bound_in_text() {
+    let (client, _server) = connect(mock()).await;
+    let result = client
+        .call_tool(call(
+            "traceroute",
+            json!({ "target": "example.test", "max_hops": 30, "timeout_ms": 1000 }),
+        ))
+        .await
+        .expect("over budget is a tool error");
+    let e = tool_error(&result);
+    assert_eq!(e.kind, "invalid_request");
+    assert!(
+        e.message.contains("90000 ms") && e.message.contains("60 s"),
+        "{}",
+        e.message
+    );
+}
+
+#[tokio::test]
+async fn tcp_latency_port_zero_returns_is_error_invalid_request() {
+    let (client, _server) = connect(mock()).await;
     let result = client
         .call_tool(call(
             "tcp_latency",
-            json!({ "target": "nonexistent.invalid", "count": 1 }),
+            json!({ "target": "example.test", "port": 0 }),
         ))
         .await
         .unwrap();
+    let e = tool_error(&result);
+    assert_eq!(e.kind, "invalid_request");
+    assert!(e.message.contains("port"), "{}", e.message);
+}
+
+#[tokio::test]
+async fn out_of_type_range_value_returns_message_naming_the_limit() {
+    let (client, _server) = connect(mock()).await;
+    let result = client
+        .call_tool(call(
+            "traceroute",
+            json!({ "target": "example.test", "max_hops": 300 }),
+        ))
+        .await
+        .unwrap();
+    let e = tool_error(&result);
+    assert!(
+        e.message.contains("max_hops must be between 1 and 64"),
+        "{}",
+        e.message
+    );
+}
+
+#[tokio::test]
+async fn unknown_argument_returns_is_error_invalid_request() {
+    let (client, _server) = connect(mock()).await;
+    let result = client
+        .call_tool(call(
+            "ping",
+            json!({ "target": "example.test", "cout": 20 }),
+        ))
+        .await
+        .unwrap();
+    let e = tool_error(&result);
+    assert_eq!(e.kind, "invalid_request");
+    assert!(e.message.contains("cout"), "{}", e.message);
+}
+
+#[tokio::test]
+async fn dns_failure_returns_is_error_with_kind_dns_resolution() {
+    let (client, _server) = connect(IntqualServer::new(Source::Network)).await;
+    // `.invalid` never resolves (RFC 6761); the timeout keeps a slow resolver from hanging
+    // the suite.
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        client.call_tool(call(
+            "tcp_latency",
+            json!({ "target": "nonexistent.invalid", "count": 1 }),
+        )),
+    )
+    .await
+    .expect("DNS lookup did not finish within 30 s")
+    .unwrap();
     assert_eq!(tool_error(&result).kind, "dns_resolution");
 }
 
@@ -442,7 +551,7 @@ async fn wrong_argument_type_returns_is_error_invalid_request() {
     let e = tool_error(&result);
     assert_eq!(e.kind, "invalid_request");
     assert!(
-        e.message.contains("count") || e.message.contains("u32"),
+        e.message.contains("invalid arguments") && e.message.contains("invalid type"),
         "{}",
         e.message
     );
@@ -545,7 +654,7 @@ async fn cancel_while_queued_releases_semaphore() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn cancel_during_call_returns_interrupted_partial_or_ends() {
+async fn cancel_during_call_stops_measurement_with_interrupted_report() {
     let (server, _stats, mut done) = recording();
     let (client, _server) = connect(server).await;
     let handle = client

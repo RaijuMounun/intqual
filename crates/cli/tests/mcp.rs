@@ -34,14 +34,33 @@ fn spawn_mcp(dir: &PathBuf, rust_log: Option<&str>) -> Child {
 }
 
 /// Waits for the child on another thread, so a hung server fails the test instead of blocking.
+/// On timeout the child is killed by pid, since the waiting thread owns the `Child`.
 fn wait_with_deadline(child: Child) -> Output {
+    let pid = child.id();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(child.wait_with_output());
     });
-    rx.recv_timeout(DEADLINE)
-        .expect("intqual mcp did not exit before the deadline")
-        .expect("failed to wait for intqual mcp")
+    match rx.recv_timeout(DEADLINE) {
+        Ok(output) => output.expect("failed to wait for intqual mcp"),
+        Err(_) => {
+            kill(pid);
+            panic!("intqual mcp did not exit before the deadline");
+        }
+    }
+}
+
+fn kill(pid: u32) {
+    let status = if cfg!(windows) {
+        Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .status()
+    } else {
+        Command::new("kill").args(["-9", &pid.to_string()]).status()
+    };
+    if let Err(e) = status {
+        eprintln!("could not kill intqual mcp (pid {pid}): {e}");
+    }
 }
 
 /// `initialize`, `notifications/initialized`, `tools/list`, then stdin is closed.
@@ -77,7 +96,12 @@ fn code(status: ExitStatus) -> Option<i32> {
 
 #[test]
 fn cli_mcp_mock_stdout_only_jsonrpc_lines() {
-    let o = session(None, &temp_dir("stdout"));
+    let dir = temp_dir("stdout");
+    let o = session(None, &dir);
+    assert!(
+        !dir.join("intqual.log").exists(),
+        "default run wrote intqual.log"
+    );
     let lines = stdout_lines(&o);
     assert!(!lines.is_empty(), "no output");
     for v in &lines {
@@ -141,17 +165,20 @@ fn cli_mcp_start_failure_exits_1() {
     assert!(stderr.contains("failed to start"), "stderr: {stderr}");
 }
 
-fn headless(args: &[&str]) -> Output {
+fn headless(name: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_intqual"))
         .args(args)
-        .current_dir(temp_dir(&format!("headless-{}", args.len())))
+        .current_dir(temp_dir(name))
         .output()
         .expect("failed to run intqual")
 }
 
 #[test]
 fn cli_positional_target_still_works_after_subcommand() {
-    let o = headless(&["--count", "1", "--json", "--mock", "--interval", "10", "x"]);
+    let o = headless(
+        "positional",
+        &["--count", "1", "--json", "--mock", "--interval", "10", "x"],
+    );
     assert_eq!(code(o.status), Some(0));
     let v: Value = serde_json::from_slice(&o.stdout).unwrap();
     assert_eq!(v["target"], "x");
@@ -159,16 +186,19 @@ fn cli_positional_target_still_works_after_subcommand() {
 
 #[test]
 fn cli_dash_dash_mcp_is_treated_as_host() {
-    let o = headless(&[
-        "--count",
-        "1",
-        "--json",
-        "--mock",
-        "--interval",
-        "10",
-        "--",
-        "mcp",
-    ]);
+    let o = headless(
+        "dash-dash",
+        &[
+            "--count",
+            "1",
+            "--json",
+            "--mock",
+            "--interval",
+            "10",
+            "--",
+            "mcp",
+        ],
+    );
     assert_eq!(code(o.status), Some(0));
     let v: Value = serde_json::from_slice(&o.stdout).expect("headless JSON, not the MCP server");
     assert_eq!(v["target"], "mcp");

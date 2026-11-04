@@ -130,7 +130,7 @@ Two kinds of failure, as the MCP spec defines them:
   `{"kind": "...", "message": "..."}` (same shape as in the report). Used when `measure` returns
   `Err` (`invalid_request`, `dns_resolution`, including "no address found"), for the MCP
   limit checks above, and for arguments that do not deserialize (wrong type, missing `target`:
-  `invalid_request`). MCP 2025-11-25 makes input errors tool errors so the model can correct
+  `invalid_request`). Unknown argument names (a typo such as `cout`) are rejected the same way instead of silently using the default, and numbers outside the field type (`max_hops: 300`) get the bound-naming message. MCP 2025-11-25 makes input errors tool errors so the model can correct
   itself; the handlers deserialize the arguments themselves to keep this one shape (rmcp 3.8
   would otherwise return plain text). The model sees these and can fix its arguments. The handlers build this
   `CallToolResult` themselves rather than returning `Err(String)`, because rmcp would turn a

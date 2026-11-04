@@ -4,6 +4,10 @@
 //! puts its own timeout on every request, so each call must stay short and bounded. The checks
 //! here run before `MeasureRequest::validate()`, so an out-of-range value gets the MCP bound in
 //! its message, not the wider CLI one. Pure functions: tested without a transport.
+//!
+//! Numeric arguments are `i64` on the wire: with `u8`/`u16` fields, `max_hops: 300` or
+//! `count: -1` would fail inside serde with "expected u8", which a model cannot act on. Every
+//! value goes through `checked`, so the message always names the field and its bounds.
 
 use intqual_core::measure::{MeasureRequest, Source};
 use intqual_core::models::ProbeError;
@@ -13,101 +17,109 @@ use serde::de::DeserializeOwned;
 use std::ops::RangeInclusive;
 use std::time::Duration;
 
-pub const COUNT_RANGE: RangeInclusive<u32> = 1..=20;
-pub const INTERVAL_MS_RANGE: RangeInclusive<u64> = 100..=5000;
-pub const TIMEOUT_MS_RANGE: RangeInclusive<u64> = 100..=5000;
-pub const MAX_HOPS_RANGE: RangeInclusive<u8> = 1..=64;
+// The `#[schemars(range(...))]` attributes below repeat these bounds for the advertised input
+// schema; `input_schema_ranges_match_limit_constants` (tests/server.rs) keeps them in step.
+pub const COUNT_RANGE: RangeInclusive<i64> = 1..=20;
+pub const INTERVAL_MS_RANGE: RangeInclusive<i64> = 100..=5000;
+pub const TIMEOUT_MS_RANGE: RangeInclusive<i64> = 100..=5000;
+pub const MAX_HOPS_RANGE: RangeInclusive<i64> = 1..=64;
+pub const PORT_RANGE: RangeInclusive<i64> = 1..=65535;
 /// Worst-case duration of one tool call. Hosts time requests out on their own; staying well
 /// under a minute keeps a call from being abandoned half-way.
 pub const CALL_BUDGET: Duration = Duration::from_secs(60);
 
-const DEFAULT_PORT: u16 = 443;
-const DEFAULT_COUNT: u32 = 4;
-const DEFAULT_INTERVAL_MS: u64 = 500;
-const DEFAULT_TIMEOUT_MS: u64 = 1000;
-const DEFAULT_TRACEROUTE_TIMEOUT_MS: u64 = 500;
-const DEFAULT_MAX_HOPS: u8 = 30;
+const DEFAULT_PORT: i64 = 443;
+const DEFAULT_COUNT: i64 = 4;
+const DEFAULT_INTERVAL_MS: i64 = 500;
+const DEFAULT_TIMEOUT_MS: i64 = 1000;
+const DEFAULT_TRACEROUTE_TIMEOUT_MS: i64 = 500;
+const DEFAULT_MAX_HOPS: i64 = 30;
 /// Traceroute probes per hop (see `TracerouteProbe`), used for the time budget.
 const PROBES_PER_HOP: u32 = 3;
 
-fn default_port() -> u16 {
+fn default_port() -> i64 {
     DEFAULT_PORT
 }
-fn default_count() -> u32 {
+fn default_count() -> i64 {
     DEFAULT_COUNT
 }
-fn default_interval_ms() -> u64 {
+fn default_interval_ms() -> i64 {
     DEFAULT_INTERVAL_MS
 }
-fn default_timeout_ms() -> u64 {
+fn default_timeout_ms() -> i64 {
     DEFAULT_TIMEOUT_MS
 }
-fn default_traceroute_timeout_ms() -> u64 {
+fn default_traceroute_timeout_ms() -> i64 {
     DEFAULT_TRACEROUTE_TIMEOUT_MS
 }
-fn default_max_hops() -> u8 {
+fn default_max_hops() -> i64 {
     DEFAULT_MAX_HOPS
 }
 
-/// Arguments of the `ping` tool.
+/// Arguments of the `ping` tool. All three args types reject unknown fields: a typo such as
+/// `cout` would otherwise silently measure with the default.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PingArgs {
     /// Hostname or IP address to measure, for example `example.com` or `1.1.1.1`.
     pub target: String,
     /// Number of ICMP echo requests, 1 to 20.
     #[serde(default = "default_count")]
     #[schemars(range(min = 1, max = 20))]
-    pub count: u32,
+    pub count: i64,
     /// Milliseconds between requests, 100 to 5000.
     #[serde(default = "default_interval_ms")]
     #[schemars(range(min = 100, max = 5000))]
-    pub interval_ms: u64,
+    pub interval_ms: i64,
     /// Milliseconds to wait for each reply, 100 to 5000.
     #[serde(default = "default_timeout_ms")]
     #[schemars(range(min = 100, max = 5000))]
-    pub timeout_ms: u64,
+    pub timeout_ms: i64,
 }
 
 /// Arguments of the `tcp_latency` tool.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TcpArgs {
     /// Hostname or IP address to measure, for example `example.com` or `1.1.1.1`.
     pub target: String,
     /// TCP port to connect to, 1 to 65535. 443 (HTTPS) passes most firewalls.
     #[serde(default = "default_port")]
     #[schemars(range(min = 1, max = 65535))]
-    pub port: u16,
+    pub port: i64,
     /// Number of TCP connects, 1 to 20.
     #[serde(default = "default_count")]
     #[schemars(range(min = 1, max = 20))]
-    pub count: u32,
+    pub count: i64,
     /// Milliseconds between connects, 100 to 5000.
     #[serde(default = "default_interval_ms")]
     #[schemars(range(min = 100, max = 5000))]
-    pub interval_ms: u64,
+    pub interval_ms: i64,
     /// Milliseconds to wait for each handshake, 100 to 5000.
     #[serde(default = "default_timeout_ms")]
     #[schemars(range(min = 100, max = 5000))]
-    pub timeout_ms: u64,
+    pub timeout_ms: i64,
 }
 
 /// Arguments of the `traceroute` tool.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TracerouteArgs {
     /// Hostname or IP address to trace, for example `example.com` or `1.1.1.1`.
     pub target: String,
     /// Highest TTL to probe, 1 to 64.
     #[serde(default = "default_max_hops")]
     #[schemars(range(min = 1, max = 64))]
-    pub max_hops: u8,
+    pub max_hops: i64,
     /// Milliseconds to wait for each probe, 100 to 5000. Three probes are sent per hop.
     #[serde(default = "default_traceroute_timeout_ms")]
     #[schemars(range(min = 100, max = 5000))]
-    pub timeout_ms: u64,
+    pub timeout_ms: i64,
 }
 
-/// Deserializes raw tool arguments. A wrong type or a missing field is an `invalid_request`
-/// tool error, not a protocol error, so the model sees the reason and can retry.
+/// Deserializes raw tool arguments. A wrong type, a missing `target` or an unknown field is an
+/// `invalid_request` tool error, not a protocol error, so the model sees the reason and can
+/// retry.
 pub fn parse<T: DeserializeOwned>(
     args: serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, ProbeError> {
@@ -119,46 +131,29 @@ fn invalid(msg: String) -> ProbeError {
     ProbeError::InvalidRequest(msg)
 }
 
-fn check_count(count: u32) -> Result<(), ProbeError> {
-    if COUNT_RANGE.contains(&count) {
-        return Ok(());
+/// Checks `value` against `range` and converts it to the request's type. Every range fits its
+/// target type, so the conversion can only fail if a constant is widened past it; it then
+/// gives the same message.
+fn checked<T: TryFrom<i64>>(
+    name: &str,
+    value: i64,
+    range: &RangeInclusive<i64>,
+) -> Result<T, ProbeError> {
+    let out_of_range = || {
+        invalid(format!(
+            "{name} must be between {} and {}, got {value}",
+            range.start(),
+            range.end()
+        ))
+    };
+    if !range.contains(&value) {
+        return Err(out_of_range());
     }
-    Err(invalid(format!(
-        "count must be between {} and {}, got {count}",
-        COUNT_RANGE.start(),
-        COUNT_RANGE.end()
-    )))
+    T::try_from(value).map_err(|_| out_of_range())
 }
 
-fn check_ms(name: &str, value: u64, range: &RangeInclusive<u64>) -> Result<(), ProbeError> {
-    if range.contains(&value) {
-        return Ok(());
-    }
-    Err(invalid(format!(
-        "{name} must be between {} and {}, got {value}",
-        range.start(),
-        range.end()
-    )))
-}
-
-fn check_max_hops(max_hops: u8) -> Result<(), ProbeError> {
-    if MAX_HOPS_RANGE.contains(&max_hops) {
-        return Ok(());
-    }
-    Err(invalid(format!(
-        "max_hops must be between {} and {}, got {max_hops}",
-        MAX_HOPS_RANGE.start(),
-        MAX_HOPS_RANGE.end()
-    )))
-}
-
-fn check_port(port: u16) -> Result<(), ProbeError> {
-    if port == 0 {
-        return Err(invalid(
-            "port must be between 1 and 65535, got 0".to_string(),
-        ));
-    }
-    Ok(())
+fn millis(name: &str, value: i64, range: &RangeInclusive<i64>) -> Result<Duration, ProbeError> {
+    checked(name, value, range).map(Duration::from_millis)
 }
 
 /// The latency tools' worst case, the same bound `measure` uses as its collection deadline:
@@ -186,19 +181,17 @@ fn check_budget(bound: Duration, formula: &str) -> Result<(), ProbeError> {
     )))
 }
 
+/// A ping or TCP request: limits, then the budget, then `validate()`.
 fn latency_request(
     target: &str,
     port: u16,
-    count: u32,
-    interval_ms: u64,
-    timeout_ms: u64,
+    (count, interval_ms, timeout_ms): (i64, i64, i64),
+    (icmp, tcp): (bool, bool),
     source: Source,
 ) -> Result<MeasureRequest, ProbeError> {
-    check_count(count)?;
-    check_ms("interval_ms", interval_ms, &INTERVAL_MS_RANGE)?;
-    check_ms("timeout_ms", timeout_ms, &TIMEOUT_MS_RANGE)?;
-    let interval = Duration::from_millis(interval_ms);
-    let timeout = Duration::from_millis(timeout_ms);
+    let count: u32 = checked("count", count, &COUNT_RANGE)?;
+    let interval = millis("interval_ms", interval_ms, &INTERVAL_MS_RANGE)?;
+    let timeout = millis("timeout_ms", timeout_ms, &TIMEOUT_MS_RANGE)?;
     check_budget(
         latency_bound(count, interval, timeout),
         "count × interval_ms + 2 × timeout_ms + 1000 ms",
@@ -209,44 +202,36 @@ fn latency_request(
         count,
         interval,
         timeout,
-        icmp: false,
-        tcp: false,
+        icmp,
+        tcp,
         traceroute: false,
-        max_hops: DEFAULT_MAX_HOPS,
+        max_hops: intqual_core::measure::DEFAULT_MAX_HOPS,
         source,
     };
+    req.validate()?;
     Ok(req)
 }
 
 /// `ping`: ICMP only.
 pub fn ping_request(args: &PingArgs, source: Source) -> Result<MeasureRequest, ProbeError> {
-    let mut req = latency_request(
+    latency_request(
         &args.target,
-        DEFAULT_PORT,
-        args.count,
-        args.interval_ms,
-        args.timeout_ms,
+        checked("port", DEFAULT_PORT, &PORT_RANGE)?,
+        (args.count, args.interval_ms, args.timeout_ms),
+        (true, false),
         source,
-    )?;
-    req.icmp = true;
-    req.validate()?;
-    Ok(req)
+    )
 }
 
 /// `tcp_latency`: TCP only.
 pub fn tcp_request(args: &TcpArgs, source: Source) -> Result<MeasureRequest, ProbeError> {
-    check_port(args.port)?;
-    let mut req = latency_request(
+    latency_request(
         &args.target,
-        args.port,
-        args.count,
-        args.interval_ms,
-        args.timeout_ms,
+        checked("port", args.port, &PORT_RANGE)?,
+        (args.count, args.interval_ms, args.timeout_ms),
+        (false, true),
         source,
-    )?;
-    req.tcp = true;
-    req.validate()?;
-    Ok(req)
+    )
 }
 
 /// `traceroute`: traceroute only. `count` and `interval` are unused by the traceroute but
@@ -255,23 +240,22 @@ pub fn traceroute_request(
     args: &TracerouteArgs,
     source: Source,
 ) -> Result<MeasureRequest, ProbeError> {
-    check_max_hops(args.max_hops)?;
-    check_ms("timeout_ms", args.timeout_ms, &TIMEOUT_MS_RANGE)?;
-    let timeout = Duration::from_millis(args.timeout_ms);
+    let max_hops: u8 = checked("max_hops", args.max_hops, &MAX_HOPS_RANGE)?;
+    let timeout = millis("timeout_ms", args.timeout_ms, &TIMEOUT_MS_RANGE)?;
     check_budget(
-        traceroute_bound(args.max_hops, timeout),
+        traceroute_bound(max_hops, timeout),
         "max_hops × 3 × timeout_ms",
     )?;
     let req = MeasureRequest {
         target: args.target.clone(),
-        port: DEFAULT_PORT,
+        port: checked("port", DEFAULT_PORT, &PORT_RANGE)?,
         count: 1,
-        interval: Duration::from_millis(DEFAULT_INTERVAL_MS),
+        interval: millis("interval_ms", DEFAULT_INTERVAL_MS, &INTERVAL_MS_RANGE)?,
         timeout,
         icmp: false,
         tcp: false,
         traceroute: true,
-        max_hops: args.max_hops,
+        max_hops,
         source,
     };
     req.validate()?;
@@ -282,7 +266,7 @@ pub fn traceroute_request(
 mod tests {
     use super::*;
 
-    fn ping(count: u32, interval_ms: u64, timeout_ms: u64) -> PingArgs {
+    fn ping(count: i64, interval_ms: i64, timeout_ms: i64) -> PingArgs {
         PingArgs {
             target: "example.test".into(),
             count,
@@ -291,7 +275,7 @@ mod tests {
         }
     }
 
-    fn tcp(port: u16) -> TcpArgs {
+    fn tcp(port: i64) -> TcpArgs {
         TcpArgs {
             target: "example.test".into(),
             port,
@@ -301,7 +285,7 @@ mod tests {
         }
     }
 
-    fn trace(max_hops: u8, timeout_ms: u64) -> TracerouteArgs {
+    fn trace(max_hops: i64, timeout_ms: i64) -> TracerouteArgs {
         TracerouteArgs {
             target: "example.test".into(),
             max_hops,
@@ -309,8 +293,22 @@ mod tests {
         }
     }
 
-    fn from_json<T: for<'de> Deserialize<'de>>(v: serde_json::Value) -> T {
-        serde_json::from_value(v).unwrap()
+    fn object(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    fn from_json<T: DeserializeOwned>(v: serde_json::Value) -> T {
+        parse(object(v)).unwrap()
+    }
+
+    fn parse_err<T: DeserializeOwned + std::fmt::Debug>(v: serde_json::Value) -> String {
+        match parse::<T>(object(v)) {
+            Err(e) => {
+                assert_eq!(e.kind(), "invalid_request");
+                e.to_string()
+            }
+            Ok(args) => panic!("expected invalid_request, parsed {args:?}"),
+        }
     }
 
     fn message(r: Result<MeasureRequest, ProbeError>) -> String {
@@ -324,18 +322,45 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_wrong_type_and_missing_target_as_invalid_request() {
-        let wrong = serde_json::json!({ "target": "x", "count": "x" });
-        let Err(e) = parse::<PingArgs>(wrong.as_object().unwrap().clone()) else {
-            panic!("count \"x\" must not parse");
-        };
-        assert_eq!(e.kind(), "invalid_request");
-        assert!(e.to_string().contains("invalid arguments"), "{e}");
-        let missing = serde_json::json!({ "max_hops": 5 });
-        let Err(e) = parse::<TracerouteArgs>(missing.as_object().unwrap().clone()) else {
-            panic!("missing target must not parse");
-        };
-        assert!(e.to_string().contains("target"), "{e}");
+    fn parse_rejects_wrong_type_as_invalid_request() {
+        let text = parse_err::<PingArgs>(serde_json::json!({ "target": "x", "count": "x" }));
+        assert!(text.contains("invalid arguments"), "{text}");
+    }
+
+    #[test]
+    fn parse_rejects_missing_target_as_invalid_request() {
+        let text = parse_err::<TracerouteArgs>(serde_json::json!({ "max_hops": 5 }));
+        assert!(text.contains("target"), "{text}");
+    }
+
+    #[test]
+    fn parse_rejects_unknown_argument_as_invalid_request() {
+        let text = parse_err::<PingArgs>(serde_json::json!({ "target": "x", "cout": 20 }));
+        assert!(text.contains("cout"), "{text}");
+        parse_err::<TcpArgs>(serde_json::json!({ "target": "x", "interval": 100 }));
+        parse_err::<TracerouteArgs>(serde_json::json!({ "target": "x", "count": 1 }));
+    }
+
+    #[test]
+    fn out_of_type_range_integers_get_a_message_naming_the_limit() {
+        let hops: TracerouteArgs = from_json(serde_json::json!({ "target": "x", "max_hops": 300 }));
+        let text = message(traceroute_request(&hops, Source::Mock));
+        assert!(
+            text.contains("max_hops must be between 1 and 64, got 300"),
+            "{text}"
+        );
+        let port: TcpArgs = from_json(serde_json::json!({ "target": "x", "port": 70000 }));
+        let text = message(tcp_request(&port, Source::Mock));
+        assert!(
+            text.contains("port must be between 1 and 65535, got 70000"),
+            "{text}"
+        );
+        let count: PingArgs = from_json(serde_json::json!({ "target": "x", "count": -1 }));
+        let text = message(ping_request(&count, Source::Mock));
+        assert!(
+            text.contains("count must be between 1 and 20, got -1"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -346,6 +371,7 @@ mod tests {
         assert_eq!(req.count, 4);
         assert_eq!(req.interval, Duration::from_millis(500));
         assert_eq!(req.timeout, Duration::from_millis(1000));
+        assert_eq!(req.port, 443);
         assert!(req.icmp && !req.tcp && !req.traceroute);
         assert_eq!(req.source, Source::Mock);
     }
@@ -371,7 +397,7 @@ mod tests {
     #[test]
     fn tcp_args_port_zero_rejected() {
         let text = message(tcp_request(&tcp(0), Source::Mock));
-        assert!(text.contains("port"), "{text}");
+        assert!(text.contains("port must be between 1 and 65535"), "{text}");
     }
 
     #[test]
@@ -380,6 +406,7 @@ mod tests {
         let req = traceroute_request(&args, Source::Mock).unwrap();
         assert_eq!(req.max_hops, 30);
         assert_eq!(req.timeout, Duration::from_millis(500));
+        assert_eq!(req.count, 1, "unused by traceroute; smallest valid value");
         assert!(!req.icmp && !req.tcp && req.traceroute);
     }
 
