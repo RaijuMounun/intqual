@@ -174,8 +174,10 @@ form is the output contract, versioned with `schema_version`.
 
 ### 3. CLI (`crates/cli/src/headless.rs`)
 
-- New flags on the existing `Cli`: `--count <N>` (`-c`), `--json`, `--traceroute`.
-  `--json` and `--traceroute` `requires = "count"`, so clap rejects them without it.
+- New flags on the existing `Cli`: `--count <N>` (`-c`), `--json`, `--traceroute`, `--no-icmp`.
+  `--json`, `--traceroute` and `--no-icmp` `requires = "count"`, so clap rejects them without it.
+  `--no-icmp` sets `icmp: false` (TCP only; `"icmp": null` in the JSON), so the exit code
+  reflects the TCP port alone. There is no `--no-tcp`: TCP is the probe the port is for.
   `--port`, `--interval`, `--timeout`, `--mock` keep their meaning. `--count` turns on headless
   mode; `--mock` with `--count` means `Source::Mock`.
 - `headless.rs` exposes pure `exit_code(&MeasureReport) -> i32` and
@@ -263,3 +265,5 @@ the TUI still opens without `--count`; CI green.
   failed samples, unlike the TUI); a router's Destination Unreachable no longer counts as reaching
   the destination (`is_destination: false`, `complete: false`; the probe still stops there); ICMP
   identifiers come from a process-wide counter instead of the clock's nanoseconds.
+- 2026-11-05: `--no-icmp` (TCP-only headless run), needed to test exit 1 through the binary
+  on loopback, where ICMP always succeeds.
