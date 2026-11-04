@@ -47,11 +47,14 @@ pub struct PingMetrics {
     /// `Result`: In network diagnostics, a failure (Timeout/Permission Denied) is first-class data.
     /// Using `Result` forces the UI to explicitly handle and display specific OS errors,
     /// preventing "error swallowing" and ensuring high observability.
-    pub icmp_ping: Result<f64, ProbeError>,
+    /// `None` until the first ICMP sample arrives: ICMP and TCP probes report independently,
+    /// and inventing a placeholder error would show a timeout that never happened.
+    pub icmp_ping: Option<Result<f64, ProbeError>>,
 
     /// The TCP ping latency (handshake duration) in milliseconds.
     /// Follows the same strict error-handling paradigm as `icmp_ping` to detect Application Layer drops.
-    pub tcp_ping: Result<f64, ProbeError>,
+    /// `None` until the first TCP sample arrives, for the same reason as `icmp_ping`.
+    pub tcp_ping: Option<Result<f64, ProbeError>>,
 
     /// UNIX timestamp of when this measurement was dispatched.
     /// While sequence numbers handle UI relative ordering, absolute timestamps are essential
