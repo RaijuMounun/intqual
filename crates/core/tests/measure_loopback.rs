@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 fn loopback(port: u16, count: u32, timeout: Duration) -> MeasureRequest {
     MeasureRequest {
         target: "127.0.0.1".to_string(),
+        ip_version: intqual_core::IpVersion::Auto,
         port,
         count,
         interval: Duration::from_millis(20),
@@ -118,4 +119,54 @@ async fn measure_loopback_icmp_succeeds_on_windows() {
     let icmp = report.icmp.unwrap();
     assert_eq!(icmp.summary.sent, 2);
     assert!(icmp.summary.received >= 1, "samples: {:?}", icmp.samples);
+}
+
+/// H3: ping and traceroute to `::1` through the ICMPv6 Helper API, no admin. The traceroute
+/// ends at hop 1 with `complete: true`.
+#[cfg(windows)]
+#[tokio::test]
+async fn measure_ipv6_loopback_ping_and_traceroute_on_windows() {
+    let req = MeasureRequest {
+        target: "::1".to_string(),
+        ip_version: intqual_core::IpVersion::V6,
+        icmp: true,
+        tcp: false,
+        traceroute: true,
+        ..loopback(0, 2, Duration::from_secs(1))
+    };
+    let report = measure(&req, CancellationToken::new(), None).await.unwrap();
+    assert_eq!(report.resolved_ip, "::1");
+    assert_eq!(report.ip_version, intqual_core::IpFamily::V6);
+    let icmp = report.icmp.unwrap();
+    assert!(icmp.summary.received >= 1, "samples: {:?}", icmp.samples);
+    let trace = report.traceroute.unwrap();
+    assert!(trace.complete, "{trace:?}");
+    assert!(trace.error.is_none(), "{trace:?}");
+    assert_eq!(trace.hops.len(), 1, "{trace:?}");
+    assert_eq!(trace.hops[0].hop_number, 1);
+    assert!(trace.hops[0].is_destination);
+    assert_eq!(trace.hops[0].ip_address.as_deref(), Some("::1"));
+}
+
+/// Bracketed IPv6 and `auto`: the brackets are stripped and no DNS runs.
+#[tokio::test]
+async fn measure_bracketed_ipv6_loopback_tcp() {
+    let listener = match tokio::net::TcpListener::bind("[::1]:0").await {
+        Ok(l) => l,
+        // A host with IPv6 disabled has no ::1; nothing to test there.
+        Err(e) => {
+            eprintln!("skipping: no IPv6 loopback ({e})");
+            return;
+        }
+    };
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+    let req = MeasureRequest {
+        target: " [::1] ".to_string(),
+        ..loopback(port, 2, Duration::from_secs(2))
+    };
+    let report = measure(&req, CancellationToken::new(), None).await.unwrap();
+    assert_eq!(report.target, "::1");
+    assert_eq!(report.ip_version, intqual_core::IpFamily::V6);
+    assert_eq!(report.tcp.unwrap().summary.received, 2);
 }

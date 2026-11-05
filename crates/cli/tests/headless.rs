@@ -175,3 +175,87 @@ fn cli_closed_port_exits_1() {
     assert_eq!(v["tcp"]["summary"]["received"], 0);
     assert_eq!(v["tcp"]["samples"][0]["error"]["kind"], "socket");
 }
+
+/// H1: an empty target is rejected before DNS (it used to ping the local machine).
+#[test]
+fn cli_empty_target_exits_2_with_invalid_target() {
+    let o = intqual(&["-c", "1", "--json", ""]);
+    assert_eq!(o.status.code(), Some(2));
+    let v = json(&o);
+    assert_eq!(v["error"]["kind"], "invalid_target");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("target is empty")),
+        "{v}"
+    );
+}
+
+/// H2: malformed targets fail with `invalid_target`, not a misleading DNS error. No network:
+/// they are rejected before any lookup.
+#[test]
+fn cli_malformed_targets_exit_2_with_a_hint_on_stderr() {
+    for (target, hint) in [
+        ("https://google.com", "not a URL (try `google.com`)"),
+        ("google.com; whoami", "contains a space"),
+        ("google.com:443", "port option"),
+    ] {
+        let o = intqual(&["-c", "1", target]);
+        assert_eq!(o.status.code(), Some(2), "{target}");
+        assert!(o.stdout.is_empty(), "{target}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains(hint), "{target}: {err}");
+    }
+}
+
+/// The TUI checks the target before the engine starts and the alternate screen opens, so a
+/// bad target exits 2 with a message instead of drawing the UI.
+#[test]
+fn cli_tui_rejects_a_bad_target_before_starting() {
+    let o = intqual(&["https://google.com"]);
+    assert_eq!(o.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("not a URL"), "{err}");
+}
+
+#[test]
+fn cli_ipv4_and_ipv6_flags_conflict() {
+    let o = intqual(&["-c", "1", "--mock", "-4", "-6"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("cannot be used with"));
+}
+
+#[test]
+fn cli_ip_literal_of_the_other_family_exits_2() {
+    let o = intqual(&["-c", "1", "--json", "-6", "127.0.0.1"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(json(&o)["error"]["kind"], "no_address_for_family");
+    let o = intqual(&["-c", "1", "--json", "-4", "::1"]);
+    assert_eq!(json(&o)["error"]["kind"], "no_address_for_family");
+}
+
+#[test]
+fn cli_mock_v6_reports_ip_version_v6() {
+    let o = intqual(&["-c", "1", "--json", "--mock", "-6", "--interval", "10"]);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(json(&o)["ip_version"], "v6");
+}
+
+/// H3: ICMPv6 to `::1` through the ICMPv6 Helper API, no admin. TCP to `::1:443` normally
+/// fails (nothing listens), so the ICMP reply alone gives exit 0.
+#[cfg(windows)]
+#[test]
+fn cli_ipv6_loopback_ping_succeeds_on_windows() {
+    let o = intqual(&["-c", "1", "--json", "-6", "::1", "-t", "500"]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        stdout(&o),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let v = json(&o);
+    assert_eq!(v["resolved_ip"], "::1");
+    assert_eq!(v["ip_version"], "v6");
+    assert_eq!(v["icmp"]["summary"]["received"], 1, "{v}");
+}

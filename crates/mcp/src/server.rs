@@ -321,6 +321,6 @@ mod tests {
         let text = &r.content[0].as_text().unwrap().text;
         let v: serde_json::Value = serde_json::from_str(text).unwrap();
         assert_eq!(v["kind"], "invalid_request");
-        assert_eq!(v["message"], "Invalid request: x");
+        assert_eq!(v["message"], "x");
     }
 }

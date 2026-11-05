@@ -9,6 +9,7 @@
 //! `count: -1` would fail inside serde with "expected u8", which a model cannot act on. Every
 //! value goes through `checked`, so the message always names the field and its bounds.
 
+use intqual_core::IpVersion;
 use intqual_core::measure::{MeasureRequest, Source};
 use intqual_core::models::ProbeError;
 use schemars::JsonSchema;
@@ -75,6 +76,10 @@ pub struct PingArgs {
     #[serde(default = "default_timeout_ms")]
     #[schemars(range(min = 100, max = 5000))]
     pub timeout_ms: i64,
+    /// Address family: "auto" (default, the first address in the OS order), "v4" or "v6".
+    /// One address is used for the whole call; the report says which in `ip_version`.
+    #[serde(default)]
+    pub ip_version: IpVersion,
 }
 
 /// Arguments of the `tcp_latency` tool.
@@ -99,6 +104,10 @@ pub struct TcpArgs {
     #[serde(default = "default_timeout_ms")]
     #[schemars(range(min = 100, max = 5000))]
     pub timeout_ms: i64,
+    /// Address family: "auto" (default, the first address in the OS order), "v4" or "v6".
+    /// One address is used for the whole call; the report says which in `ip_version`.
+    #[serde(default)]
+    pub ip_version: IpVersion,
 }
 
 /// Arguments of the `traceroute` tool.
@@ -115,6 +124,10 @@ pub struct TracerouteArgs {
     #[serde(default = "default_traceroute_timeout_ms")]
     #[schemars(range(min = 100, max = 5000))]
     pub timeout_ms: i64,
+    /// Address family: "auto" (default, the first address in the OS order), "v4" or "v6".
+    /// One address is used for the whole call; the report says which in `ip_version`.
+    #[serde(default)]
+    pub ip_version: IpVersion,
 }
 
 /// Deserializes raw tool arguments. A wrong type, a missing `target` or an unknown field is an
@@ -169,13 +182,14 @@ pub fn traceroute_bound(max_hops: u8, timeout: Duration) -> Duration {
 
 /// Rejects a call whose worst case is over `CALL_BUDGET` (exactly the budget is accepted). The
 /// message states both numbers so the model can retry with smaller arguments.
-fn check_budget(bound: Duration, formula: &str) -> Result<(), ProbeError> {
+/// `smaller` names the arguments that shorten the call, so the hint matches the tool.
+fn check_budget(bound: Duration, formula: &str, smaller: &str) -> Result<(), ProbeError> {
     if bound <= CALL_BUDGET {
         return Ok(());
     }
     Err(invalid(format!(
         "worst-case duration {} ms ({formula}) is over the {} s limit per call; \
-         use a smaller count, interval or timeout",
+         use a smaller {smaller}",
         bound.as_millis(),
         CALL_BUDGET.as_secs()
     )))
@@ -183,7 +197,7 @@ fn check_budget(bound: Duration, formula: &str) -> Result<(), ProbeError> {
 
 /// A ping or TCP request: limits, then the budget, then `validate()`.
 fn latency_request(
-    target: &str,
+    (target, ip_version): (&str, IpVersion),
     port: u16,
     (count, interval_ms, timeout_ms): (i64, i64, i64),
     (icmp, tcp): (bool, bool),
@@ -195,9 +209,11 @@ fn latency_request(
     check_budget(
         latency_bound(count, interval, timeout),
         "count × interval_ms + 2 × timeout_ms + 1000 ms",
+        "count, interval_ms or timeout_ms",
     )?;
     let req = MeasureRequest {
         target: target.to_string(),
+        ip_version,
         port,
         count,
         interval,
@@ -215,7 +231,7 @@ fn latency_request(
 /// `ping`: ICMP only.
 pub fn ping_request(args: &PingArgs, source: Source) -> Result<MeasureRequest, ProbeError> {
     latency_request(
-        &args.target,
+        (&args.target, args.ip_version),
         checked("port", DEFAULT_PORT, &PORT_RANGE)?,
         (args.count, args.interval_ms, args.timeout_ms),
         (true, false),
@@ -226,7 +242,7 @@ pub fn ping_request(args: &PingArgs, source: Source) -> Result<MeasureRequest, P
 /// `tcp_latency`: TCP only.
 pub fn tcp_request(args: &TcpArgs, source: Source) -> Result<MeasureRequest, ProbeError> {
     latency_request(
-        &args.target,
+        (&args.target, args.ip_version),
         checked("port", args.port, &PORT_RANGE)?,
         (args.count, args.interval_ms, args.timeout_ms),
         (false, true),
@@ -245,9 +261,11 @@ pub fn traceroute_request(
     check_budget(
         traceroute_bound(max_hops, timeout),
         "max_hops × 3 × timeout_ms",
+        "max_hops or timeout_ms",
     )?;
     let req = MeasureRequest {
         target: args.target.clone(),
+        ip_version: args.ip_version,
         port: checked("port", DEFAULT_PORT, &PORT_RANGE)?,
         count: 1,
         interval: millis("interval_ms", DEFAULT_INTERVAL_MS, &INTERVAL_MS_RANGE)?,
@@ -272,6 +290,7 @@ mod tests {
             count,
             interval_ms,
             timeout_ms,
+            ip_version: IpVersion::Auto,
         }
     }
 
@@ -282,6 +301,7 @@ mod tests {
             count: DEFAULT_COUNT,
             interval_ms: DEFAULT_INTERVAL_MS,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            ip_version: IpVersion::Auto,
         }
     }
 
@@ -290,6 +310,7 @@ mod tests {
             target: "example.test".into(),
             max_hops,
             timeout_ms,
+            ip_version: IpVersion::Auto,
         }
     }
 
@@ -331,6 +352,37 @@ mod tests {
     fn parse_rejects_missing_target_as_invalid_request() {
         let text = parse_err::<TracerouteArgs>(serde_json::json!({ "max_hops": 5 }));
         assert!(text.contains("target"), "{text}");
+    }
+
+    /// One prefix, not "Invalid request: invalid arguments: ...".
+    #[test]
+    fn argument_errors_have_a_single_prefix() {
+        let text = parse_err::<PingArgs>(serde_json::json!({}));
+        assert_eq!(text, "invalid arguments: missing field `target`");
+    }
+
+    #[test]
+    fn ip_version_defaults_to_auto_and_is_passed_through() {
+        let args: PingArgs = from_json(serde_json::json!({ "target": "x" }));
+        assert_eq!(args.ip_version, IpVersion::Auto);
+        for (wire, want) in [
+            ("auto", IpVersion::Auto),
+            ("v4", IpVersion::V4),
+            ("v6", IpVersion::V6),
+        ] {
+            let p: PingArgs = from_json(serde_json::json!({ "target": "x", "ip_version": wire }));
+            assert_eq!(ping_request(&p, Source::Mock).unwrap().ip_version, want);
+            let t: TcpArgs = from_json(serde_json::json!({ "target": "x", "ip_version": wire }));
+            assert_eq!(tcp_request(&t, Source::Mock).unwrap().ip_version, want);
+            let r: TracerouteArgs =
+                from_json(serde_json::json!({ "target": "x", "ip_version": wire }));
+            assert_eq!(
+                traceroute_request(&r, Source::Mock).unwrap().ip_version,
+                want
+            );
+        }
+        let text = parse_err::<PingArgs>(serde_json::json!({ "target": "x", "ip_version": "v5" }));
+        assert!(text.contains("ip_version") || text.contains("v5"), "{text}");
     }
 
     #[test]
@@ -468,6 +520,10 @@ mod tests {
     fn budget_extreme_latency_20x5000_rejected_with_bound_in_text() {
         let text = message(ping_request(&ping(20, 5000, 5000), Source::Mock));
         assert!(text.contains("111000 ms"), "{text}");
+        assert!(
+            text.contains("use a smaller count, interval_ms or timeout_ms"),
+            "{text}"
+        );
         assert!(text.contains("60 s"), "{text}");
         let mut args = tcp(443);
         (args.count, args.interval_ms, args.timeout_ms) = (20, 5000, 5000);
@@ -478,6 +534,14 @@ mod tests {
     fn budget_traceroute_boundary_cases() {
         let over = message(traceroute_request(&trace(30, 1000), Source::Mock));
         assert!(over.contains("90000 ms") && over.contains("60 s"), "{over}");
+        assert!(
+            over.contains("use a smaller max_hops or timeout_ms"),
+            "{over}"
+        );
+        assert!(
+            !over.contains("count") && !over.contains("interval"),
+            "{over}"
+        );
         assert!(traceroute_request(&trace(30, 500), Source::Mock).is_ok());
         assert_eq!(
             traceroute_bound(40, Duration::from_millis(500)),

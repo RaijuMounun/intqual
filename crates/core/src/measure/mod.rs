@@ -13,11 +13,12 @@ pub use report::{
 };
 pub use summary::summarize;
 
-use crate::engine::mock::{MOCK_HOPS, MOCK_IP, mock_hop};
+use crate::engine::mock::{MOCK_HOPS, MOCK_IP, MOCK_IP6, mock_hop};
 use crate::models::ProbeError;
 use crate::probe::{
     NetworkProbe, TelemetryEvent, ping::PingProbe, tcp::TcpProbe, traceroute::TracerouteProbe,
 };
+use crate::target::{IpFamily, IpVersion, Target, parse_target};
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -41,7 +42,10 @@ const CHANNEL_CAPACITY: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeasureRequest {
+    /// As the user gave it; `measure` validates it with `target::parse_target`.
     pub target: String,
+    /// Address family to measure over; one address is used for every probe.
+    pub ip_version: IpVersion,
     /// TCP port.
     pub port: u16,
     /// Samples per probe, 1..=`MAX_COUNT`.
@@ -116,7 +120,8 @@ pub struct Progress {
 
 /// Runs the measurement described by `req`.
 ///
-/// `Err` only when nothing could be measured (invalid request, DNS failure, clock error);
+/// `Err` only when nothing could be measured (invalid request or target, DNS failure, no
+/// address of the requested family, clock error);
 /// every per-sample or traceroute failure is data in the report. `cancel` returns what has been
 /// collected so far with `interrupted: true`. `progress` gets a best-effort `try_send` after
 /// each latency tick and each hop, so a slow consumer never slows the measurement.
@@ -138,8 +143,10 @@ pub(crate) type Clock = fn() -> Result<u64, ProbeError>;
 /// Where `measure` gets its data. Static dispatch: `NetworkSources` for real traffic,
 /// `MockSources` for `Source::Mock`, and test doubles that stall or fail on purpose.
 pub(crate) trait Sources: Sync {
+    /// The one address every probe of the run uses. `target` is already validated.
     fn resolve(
         &self,
+        target: &Target,
         req: &MeasureRequest,
     ) -> impl Future<Output = Result<SocketAddr, ProbeError>> + Send;
 
@@ -176,6 +183,13 @@ pub(crate) async fn measure_with<S: Sources>(
         tracing::warn!("Rejected measure request: {}", e);
         return Err(e);
     }
+    let target = match parse_target(&req.target) {
+        Ok(target) => target,
+        Err(e) => {
+            tracing::warn!("Rejected measure target {:?}: {}", req.target, e);
+            return Err(e);
+        }
+    };
     let started_at = match clock() {
         Ok(ts) => ts,
         Err(e) => {
@@ -185,7 +199,7 @@ pub(crate) async fn measure_with<S: Sources>(
     };
     let start = Instant::now();
     // `resolve` logs its own failures.
-    let addr = sources.resolve(req).await?;
+    let addr = sources.resolve(&target, req).await?;
     let progress = progress.as_ref();
     let mut interrupted = false;
 
@@ -219,8 +233,9 @@ pub(crate) async fn measure_with<S: Sources>(
 
     Ok(MeasureReport {
         schema_version: SCHEMA_VERSION,
-        target: req.target.clone(),
+        target: target.to_string(),
         resolved_ip: addr.ip().to_string(),
+        ip_version: IpFamily::of(&addr.ip()),
         port: req.port,
         count: req.count,
         interval_ms: req.interval.as_millis() as u64,
@@ -458,18 +473,13 @@ async fn collect_traceroute<S: Sources>(
 pub(crate) struct NetworkSources;
 
 impl Sources for NetworkSources {
-    async fn resolve(&self, req: &MeasureRequest) -> Result<SocketAddr, ProbeError> {
-        let addr_string = format!("{}:{}", req.target, req.port);
-        match tokio::net::lookup_host(&addr_string).await {
-            Ok(addrs) => crate::network::pick_address(addrs).ok_or_else(|| {
-                tracing::error!("DNS resolution for {} returned no addresses", req.target);
-                ProbeError::DnsResolution("No IP addresses found for host".to_string())
-            }),
-            Err(e) => {
-                tracing::error!("DNS resolution for {} failed: {}", req.target, e);
-                Err(ProbeError::DnsResolution(e.to_string()))
-            }
-        }
+    async fn resolve(
+        &self,
+        target: &Target,
+        req: &MeasureRequest,
+    ) -> Result<SocketAddr, ProbeError> {
+        // Logs its own failures.
+        crate::target::resolve(target, req.port, req.ip_version).await
     }
 
     fn start_latency(
@@ -543,8 +553,27 @@ pub(crate) struct MockSources {
 }
 
 impl Sources for MockSources {
-    async fn resolve(&self, req: &MeasureRequest) -> Result<SocketAddr, ProbeError> {
-        Ok(SocketAddr::new(IpAddr::V4(MOCK_IP), req.port))
+    /// No DNS. The address is the mock one of the family the real path would pick: IPv4 for a
+    /// hostname unless `ip_version` is `v6` (so the default report stays the same), the
+    /// literal's own family for an IP. A literal goes through the real family check (it needs
+    /// no DNS), so `-6 127.0.0.1` fails the same way with `--mock`.
+    async fn resolve(
+        &self,
+        target: &Target,
+        req: &MeasureRequest,
+    ) -> Result<SocketAddr, ProbeError> {
+        let v6 = match target {
+            Target::Ip { .. } => crate::target::resolve(target, req.port, req.ip_version)
+                .await?
+                .is_ipv6(),
+            Target::Host(_) => req.ip_version == IpVersion::V6,
+        };
+        let ip = if v6 {
+            IpAddr::V6(MOCK_IP6)
+        } else {
+            IpAddr::V4(MOCK_IP)
+        };
+        Ok(SocketAddr::new(ip, req.port))
     }
 
     fn start_latency(

@@ -1,5 +1,6 @@
 use crate::models::ProbeError;
 use crate::probe::{NetworkProbe, TelemetryEvent, ping::PingProbe, tcp::TcpProbe};
+use crate::target::IpVersion;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,6 +21,7 @@ pub struct CoreEngine {
     pub target_port: u16,
     pub interval: Duration,
     pub timeout: Duration,
+    pub ip_version: IpVersion,
 }
 
 impl CoreEngine {
@@ -29,7 +31,14 @@ impl CoreEngine {
             target_port,
             interval: Duration::from_millis(interval_ms),
             timeout: Duration::from_millis(timeout_ms),
+            ip_version: IpVersion::Auto,
         }
+    }
+
+    /// `-4` / `-6`: the address family to resolve the target to.
+    pub fn with_ip_version(mut self, ip_version: IpVersion) -> Self {
+        self.ip_version = ip_version;
+        self
     }
 }
 
@@ -39,58 +48,22 @@ impl super::NetworkEngine for CoreEngine {
         tx: mpsc::Sender<TelemetryEvent>,
         mut cmd_rx: mpsc::Receiver<EngineCommand>,
     ) {
-        let addr_string = format!("{}:{}", self.target_ip, self.target_port);
-        let resolved_addr: SocketAddr = match tokio::net::lookup_host(&addr_string).await {
-            Ok(addrs) => {
-                if let Some(addr) = crate::network::pick_address(addrs) {
-                    addr
-                } else {
-                    tracing::error!(
-                        "DNS resolution succeeded but returned zero IP addresses for the target."
-                    );
-                    let err =
-                        ProbeError::DnsResolution("No IP addresses found for host".to_string());
+        // Validates the target again (main.rs already did, before the alternate screen) so the
+        // engine never sends a malformed string to DNS. `resolve_str` logs its own failures.
+        let resolved_addr =
+            match crate::target::resolve_str(&self.target_ip, self.target_port, self.ip_version)
+                .await
+            {
+                Ok(addr) => addr,
+                Err(err) => {
                     if tx.send(TelemetryEvent::Fatal(err)).await.is_err() {
-                        tracing::error!("UI channel is dead. Unable to propagate fatal DNS error.");
+                        tracing::error!(
+                            "UI channel is dead. Unable to propagate the target error."
+                        );
                     }
                     return;
                 }
-            }
-            Err(e) => {
-                let probe_err = match e.kind() {
-                    std::io::ErrorKind::NotFound => {
-                        tracing::error!("Fatal Error: DNS Resolution Failed: Host not found");
-                        ProbeError::DnsResolution("Host not found".to_string())
-                    }
-                    std::io::ErrorKind::TimedOut => {
-                        tracing::error!(
-                            "Fatal Error: DNS Resolution Failed: DNS request timed out"
-                        );
-                        ProbeError::DnsResolution("DNS request timed out".to_string())
-                    }
-                    _ => {
-                        tracing::error!("Fatal Error: DNS Resolution Failed: {}", e);
-                        ProbeError::Socket(e)
-                    }
-                };
-                if let Err(send_err) = tx.try_send(TelemetryEvent::Fatal(probe_err)) {
-                    match send_err {
-                        tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                            tracing::warn!(
-                                "UI channel overloaded, dropping telemetry frame to prevent memory exhaustion"
-                            );
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                            tracing::error!(
-                                "UI channel is dead. Shutting down due to DNS failure."
-                            );
-                            return;
-                        }
-                    }
-                }
-                return;
-            }
-        };
+            };
 
         let icmp_identifier = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(d) => (d.subsec_nanos() % 65535) as u16,

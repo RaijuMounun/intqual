@@ -179,6 +179,7 @@ impl Measurer for AllTimeouts {
             schema_version: intqual_core::measure::SCHEMA_VERSION,
             target: req.target.clone(),
             resolved_ip: "192.0.2.1".into(),
+            ip_version: intqual_core::IpFamily::V4,
             port: req.port,
             count: req.count,
             interval_ms: req.interval.as_millis() as u64,
@@ -266,6 +267,7 @@ async fn input_schema_ranges_match_limit_constants() {
     };
     let (client, _server) = connect(mock()).await;
     let mut checked = 0;
+    let mut ip_versions = 0;
     for tool in client.list_all_tools().await.unwrap() {
         let input = Value::Object((*tool.input_schema).clone());
         assert_eq!(
@@ -276,6 +278,10 @@ async fn input_schema_ranges_match_limit_constants() {
         for (arg, schema) in input["properties"].as_object().expect("properties") {
             let range = match arg.as_str() {
                 "target" => continue,
+                "ip_version" => {
+                    ip_versions += 1;
+                    continue;
+                }
                 "count" => &COUNT_RANGE,
                 "interval_ms" => &INTERVAL_MS_RANGE,
                 "timeout_ms" => &TIMEOUT_MS_RANGE,
@@ -294,6 +300,31 @@ async fn input_schema_ranges_match_limit_constants() {
         }
     }
     assert_eq!(checked, 3 + 4 + 2);
+    assert_eq!(ip_versions, 3, "every tool takes ip_version");
+}
+
+/// The schema a model reads must list the three `ip_version` values.
+#[tokio::test]
+async fn input_schema_lists_ip_version_values() {
+    let (client, _server) = connect(mock()).await;
+    for tool in client.list_all_tools().await.unwrap() {
+        let input = Value::Object((*tool.input_schema).clone());
+        let text = input.to_string();
+        for value in ["\"auto\"", "\"v4\"", "\"v6\""] {
+            assert!(
+                text.contains(value),
+                "{}: {value} missing in {text}",
+                tool.name
+            );
+        }
+        assert!(
+            input["required"]
+                .as_array()
+                .is_some_and(|r| r == &[json!("target")]),
+            "{}: ip_version must be optional",
+            tool.name
+        );
+    }
 }
 
 #[tokio::test]
@@ -456,6 +487,108 @@ async fn over_budget_traceroute_returns_is_error_with_bound_in_text() {
         "{}",
         e.message
     );
+    // H4: traceroute has no count or interval, so the hint names its own arguments.
+    assert!(
+        e.message.contains("max_hops") && e.message.contains("timeout_ms"),
+        "{}",
+        e.message
+    );
+    assert!(!e.message.contains("count"), "{}", e.message);
+}
+
+/// H1/H2: the target is checked before anything runs, in every tool, with `--mock` too.
+#[tokio::test]
+async fn bad_targets_return_is_error_invalid_target() {
+    let (client, _server) = connect(mock()).await;
+    let cases = [
+        ("", "target is empty"),
+        ("   ", "target is empty"),
+        ("https://x.com", "not a URL (try `x.com`)"),
+        ("google.com; whoami", "contains a space"),
+        ("google.com:443", "not `host:port`"),
+    ];
+    for tool in ["ping", "tcp_latency", "traceroute"] {
+        for (target, hint) in cases {
+            let result = client
+                .call_tool(call(tool, json!({ "target": target })))
+                .await
+                .expect("a bad target is a tool error, not a protocol error");
+            let e = tool_error(&result);
+            assert_eq!(e.kind, "invalid_target", "{tool} {target:?}");
+            assert!(e.message.contains(hint), "{tool} {target:?}: {}", e.message);
+        }
+    }
+    let long = "a".repeat(300);
+    let result = client
+        .call_tool(call("ping", json!({ "target": long })))
+        .await
+        .unwrap();
+    assert_eq!(tool_error(&result).kind, "invalid_target");
+}
+
+#[tokio::test]
+async fn surrounding_whitespace_is_trimmed_in_the_report() {
+    let (client, _server) = connect(mock()).await;
+    let result = client
+        .call_tool(call(
+            "ping",
+            json!({ "target": "  example.test  ", "count": 1 }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(report(&result).target, "example.test");
+}
+
+#[tokio::test]
+async fn ip_version_v6_with_mock_reports_v6() {
+    let (client, _server) = connect(mock()).await;
+    for tool in ["ping", "tcp_latency"] {
+        let result = client
+            .call_tool(call(
+                tool,
+                json!({ "target": "example.test", "count": 1, "ip_version": "v6" }),
+            ))
+            .await
+            .unwrap();
+        let r = report(&result);
+        assert_eq!(r.ip_version, intqual_core::IpFamily::V6, "{tool}");
+        assert!(r.resolved_ip.contains(':'), "{tool}: {}", r.resolved_ip);
+        let structured = result.structured_content.clone().unwrap();
+        assert_eq!(structured["ip_version"], "v6");
+    }
+    let result = client
+        .call_tool(call(
+            "ping",
+            json!({ "target": "example.test", "count": 1 }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(report(&result).ip_version, intqual_core::IpFamily::V4);
+}
+
+#[tokio::test]
+async fn ip_literal_of_the_other_family_is_no_address_for_family() {
+    let (client, _server) = connect(mock()).await;
+    let result = client
+        .call_tool(call(
+            "ping",
+            json!({ "target": "127.0.0.1", "count": 1, "ip_version": "v6" }),
+        ))
+        .await
+        .unwrap();
+    let e = tool_error(&result);
+    assert_eq!(e.kind, "no_address_for_family");
+    assert!(e.message.contains("IPv6 was requested"), "{}", e.message);
+}
+
+#[tokio::test]
+async fn unknown_ip_version_is_invalid_request() {
+    let (client, _server) = connect(mock()).await;
+    let result = client
+        .call_tool(call("ping", json!({ "target": "x", "ip_version": "ipv6" })))
+        .await
+        .unwrap();
+    assert_eq!(tool_error(&result).kind, "invalid_request");
 }
 
 #[tokio::test]
@@ -566,7 +699,8 @@ async fn missing_target_returns_is_error_invalid_request() {
         .expect("missing target is a tool error, not a protocol error");
     let e = tool_error(&result);
     assert_eq!(e.kind, "invalid_request");
-    assert!(e.message.contains("target"), "{}", e.message);
+    // H5: one prefix, not "Invalid request: invalid arguments: ...".
+    assert_eq!(e.message, "invalid arguments: missing field `target`");
 }
 
 #[tokio::test]
