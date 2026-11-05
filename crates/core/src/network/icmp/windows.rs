@@ -357,13 +357,45 @@ impl IcmpApiProvider {
     pub fn new(identifier: u16) -> Self {
         Self { identifier }
     }
+}
 
-    fn map(&self, target: &SocketAddr, status: u32, seq: u16) -> Result<IcmpResponse, ProbeError> {
-        if target.is_ipv6() {
-            map_status_v6(status, self.identifier, seq)
-        } else {
-            map_status(status, self.identifier, seq)
-        }
+/// The status table for the target's family.
+fn map_for(
+    target: &SocketAddr,
+    status: u32,
+    identifier: u16,
+    seq: u16,
+) -> Result<IcmpResponse, ProbeError> {
+    if target.is_ipv6() {
+        map_status_v6(status, identifier, seq)
+    } else {
+        map_status(status, identifier, seq)
+    }
+}
+
+/// A ping's result for one mapped response, with the ICMP type numbers of the target's
+/// family (ICMPv6 calls unreachable type 1 and time exceeded type 3).
+fn ping_result(
+    target: &SocketAddr,
+    response: IcmpResponse,
+    rtt_ms: f64,
+) -> Result<f64, ProbeError> {
+    let (unreachable, exceeded) = if target.is_ipv6() {
+        (V6_UNREACHABLE, V6_TIME_EXCEEDED)
+    } else {
+        (V4_UNREACHABLE, V4_TIME_EXCEEDED)
+    };
+    match response {
+        IcmpResponse::EchoReply(_) => Ok(rtt_ms),
+        IcmpResponse::TimeExceeded(t) => Err(ProbeError::IcmpError {
+            type_: exceeded,
+            code: t.code,
+        }),
+        IcmpResponse::DestinationUnreachable(d) => Err(ProbeError::IcmpError {
+            type_: unreachable,
+            code: d.code,
+        }),
+        IcmpResponse::Unknown { type_, code } => Err(ProbeError::IcmpError { type_, code }),
     }
 }
 
@@ -375,23 +407,8 @@ impl IcmpProvider for IcmpApiProvider {
         timeout: Duration,
     ) -> Result<f64, ProbeError> {
         let outcome = send_echo_blocking(*target, None, timeout).await?;
-        let (unreachable, exceeded) = if target.is_ipv6() {
-            (V6_UNREACHABLE, V6_TIME_EXCEEDED)
-        } else {
-            (V4_UNREACHABLE, V4_TIME_EXCEEDED)
-        };
-        match self.map(target, outcome.status, seq)? {
-            IcmpResponse::EchoReply(_) => Ok(outcome.rtt_ms),
-            IcmpResponse::TimeExceeded(t) => Err(ProbeError::IcmpError {
-                type_: exceeded,
-                code: t.code,
-            }),
-            IcmpResponse::DestinationUnreachable(d) => Err(ProbeError::IcmpError {
-                type_: unreachable,
-                code: d.code,
-            }),
-            IcmpResponse::Unknown { type_, code } => Err(ProbeError::IcmpError { type_, code }),
-        }
+        let response = map_for(target, outcome.status, self.identifier, seq)?;
+        ping_result(target, response, outcome.rtt_ms)
     }
 
     async fn send_with_ttl(
@@ -403,7 +420,7 @@ impl IcmpProvider for IcmpApiProvider {
     ) -> Result<TracerouteHopResult, ProbeError> {
         let ttl = u8::try_from(ttl).unwrap_or(u8::MAX);
         let outcome = send_echo_blocking(*target, Some(ttl), timeout).await?;
-        let response = self.map(target, outcome.status, seq)?;
+        let response = map_for(target, outcome.status, self.identifier, seq)?;
         Ok(TracerouteHopResult {
             rtt_ms: outcome.rtt_ms,
             // The API leaves the address zero when it has no responder to report.
@@ -527,6 +544,71 @@ mod tests {
         assert_eq!(scope, 12);
     }
 
+    /// The family picks the table: port unreachable is code 4 on ICMPv6, 3 on ICMPv4.
+    #[test]
+    fn map_for_uses_the_table_of_the_target_family() {
+        let v6: SocketAddr = "[::1]:0".parse().unwrap();
+        let v4: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        assert_eq!(
+            shape(map_for(&v6, IP_DEST_PORT_UNREACHABLE, 7, 9)),
+            Ok(("unreachable", 4))
+        );
+        assert_eq!(
+            shape(map_for(&v4, IP_DEST_PORT_UNREACHABLE, 7, 9)),
+            Ok(("unreachable", 3))
+        );
+        assert_eq!(
+            shape(map_for(&v6, IP_DEST_ADDR_UNREACHABLE, 7, 9)),
+            Ok(("unreachable", 3))
+        );
+        assert_eq!(
+            shape(map_for(&v4, IP_DEST_HOST_UNREACHABLE, 7, 9)),
+            Ok(("unreachable", 1))
+        );
+    }
+
+    #[test]
+    fn ping_error_type_follows_the_family() {
+        let v6: SocketAddr = "[::1]:0".parse().unwrap();
+        let v4: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let types = |target: &SocketAddr| {
+            let ty = |r: Result<f64, ProbeError>| match r {
+                Err(ProbeError::IcmpError { type_, .. }) => type_,
+                other => panic!("unexpected {other:?}"),
+            };
+            (
+                ty(ping_result(target, unreachable_response(0, 1, 1), 1.0)),
+                ty(ping_result(target, time_exceeded_response(0, 1, 1), 1.0)),
+            )
+        };
+        assert_eq!(types(&v6), (1, 3));
+        assert_eq!(types(&v4), (3, 11));
+        assert_eq!(ping_result(&v6, echo_reply(1, 1), 2.5).unwrap(), 2.5);
+    }
+
+    /// No IPv6 internet must give a clean error within the timeout, not a hang. 2001:db8::/32
+    /// is the documentation prefix (RFC 3849), never routed, so no internet is needed: the
+    /// result is a timeout or a "no route" error depending on the machine.
+    #[tokio::test]
+    async fn ping_ipv6_unroutable_returns_an_error_within_the_timeout() {
+        let provider = IcmpApiProvider::new(1);
+        let target: SocketAddr = "[2001:db8::1]:0".parse().unwrap();
+        let start = Instant::now();
+        let result = provider.ping(&target, 1, Duration::from_millis(300)).await;
+        let elapsed = start.elapsed();
+        match &result {
+            Err(e) => assert!(
+                matches!(e.kind(), "icmp_timeout" | "icmp_error" | "socket"),
+                "unexpected {e:?}"
+            ),
+            Ok(rtt) => panic!("2001:db8::1 answered in {rtt} ms"),
+        }
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "took {elapsed:?}: hang guard"
+        );
+    }
+
     #[tokio::test]
     async fn ping_loopback_without_admin() {
         let provider = IcmpApiProvider::new(1);
@@ -535,7 +617,7 @@ mod tests {
             .ping(&target, 1, Duration::from_secs(1))
             .await
             .unwrap();
-        assert!(rtt >= 0.0);
+        assert!((0.0..1000.0).contains(&rtt), "{rtt}");
     }
 
     #[tokio::test]
@@ -550,7 +632,8 @@ mod tests {
         assert_eq!(hop.responder_ip, target.ip());
     }
 
-    /// ICMPv6 through `Icmp6SendEcho2`, no admin.
+    /// ICMPv6 through `Icmp6SendEcho2`, no admin. Needs the Windows IPv6 stack (on by
+    /// default); with IPv6 disabled in the adapter settings this fails.
     #[tokio::test]
     async fn ping_ipv6_loopback_without_admin() {
         let provider = IcmpApiProvider::new(1);
@@ -559,7 +642,7 @@ mod tests {
             .ping(&target, 1, Duration::from_secs(1))
             .await
             .unwrap();
-        assert!(rtt >= 0.0);
+        assert!((0.0..1000.0).contains(&rtt), "{rtt}");
     }
 
     #[tokio::test]

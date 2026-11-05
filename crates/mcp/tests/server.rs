@@ -542,14 +542,21 @@ async fn surrounding_whitespace_is_trimmed_in_the_report() {
 #[tokio::test]
 async fn ip_version_v6_with_mock_reports_v6() {
     let (client, _server) = connect(mock()).await;
-    for tool in ["ping", "tcp_latency"] {
-        let result = client
-            .call_tool(call(
-                tool,
-                json!({ "target": "example.test", "count": 1, "ip_version": "v6" }),
-            ))
-            .await
-            .unwrap();
+    for (tool, args) in [
+        (
+            "ping",
+            json!({ "target": "example.test", "count": 1, "ip_version": "v6" }),
+        ),
+        (
+            "tcp_latency",
+            json!({ "target": "example.test", "count": 1, "ip_version": "v6" }),
+        ),
+        (
+            "traceroute",
+            json!({ "target": "example.test", "ip_version": "v6" }),
+        ),
+    ] {
+        let result = client.call_tool(call(tool, args)).await.unwrap();
         let r = report(&result);
         assert_eq!(r.ip_version, intqual_core::IpFamily::V6, "{tool}");
         assert!(r.resolved_ip.contains(':'), "{tool}: {}", r.resolved_ip);

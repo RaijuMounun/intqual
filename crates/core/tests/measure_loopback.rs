@@ -122,7 +122,7 @@ async fn measure_loopback_icmp_succeeds_on_windows() {
 }
 
 /// H3: ping and traceroute to `::1` through the ICMPv6 Helper API, no admin. The traceroute
-/// ends at hop 1 with `complete: true`.
+/// ends at hop 1 with `complete: true`. Needs the Windows IPv6 stack (on by default).
 #[cfg(windows)]
 #[tokio::test]
 async fn measure_ipv6_loopback_ping_and_traceroute_on_windows() {

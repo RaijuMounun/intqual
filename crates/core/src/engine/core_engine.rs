@@ -304,12 +304,39 @@ async fn reverse_dns(ip: &str) -> Option<String> {
         .flatten()
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::NetworkEngine;
 
+    /// The first event of an engine that could not start.
+    async fn fatal_of(engine: CoreEngine) -> ProbeError {
+        let (tx, mut rx) = mpsc::channel(100);
+        let (_cmd_tx, cmd_rx) = mpsc::channel(10);
+        engine.start(tx, cmd_rx).await;
+        match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+            Ok(Some(TelemetryEvent::Fatal(e))) => e,
+            other => panic!("expected a Fatal event, got {other:?}"),
+        }
+    }
+
+    /// The TUI's second guard: the engine validates the target too, before DNS.
+    #[tokio::test]
+    async fn bad_target_sends_fatal_invalid_target() {
+        let e = fatal_of(CoreEngine::new("https://x.com".into(), 443, 500, 500)).await;
+        assert!(matches!(e, ProbeError::InvalidTarget(_)), "{e:?}");
+    }
+
+    #[tokio::test]
+    async fn ip_version_reaches_resolution() {
+        let engine =
+            CoreEngine::new("127.0.0.1".into(), 443, 500, 500).with_ip_version(IpVersion::V6);
+        let e = fatal_of(engine).await;
+        assert!(matches!(e, ProbeError::NoAddressForFamily(_)), "{e:?}");
+    }
+
     /// Loopback only and no admin: the ICMP Helper API answers 127.0.0.1 in-process.
+    #[cfg(windows)]
     #[tokio::test]
     async fn traceroute_to_loopback_runs_in_process() {
         let (tx, mut rx) = mpsc::channel(100);

@@ -33,7 +33,8 @@ pub type TracerouteIcmpProvider = windows::IcmpApiProvider;
 pub const ICMPV6_SUPPORTED: bool = cfg!(target_os = "windows");
 
 /// The error a provider without ICMPv6 returns for an IPv6 target, instead of a socket error.
-#[cfg(unix)]
+/// Used by the Unix providers; built on every OS so its test runs on Windows too.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn require_ipv4(target: &std::net::SocketAddr) -> Result<(), crate::models::ProbeError> {
     if target.is_ipv4() {
         return Ok(());
@@ -61,6 +62,22 @@ pub fn next_identifier() -> u16 {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn require_ipv4_rejects_ipv6_with_unsupported() {
+        let v6: std::net::SocketAddr = "[::1]:0".parse().unwrap();
+        match require_ipv4(&v6) {
+            Err(e @ crate::models::ProbeError::Unsupported(_)) => {
+                assert_eq!(e.kind(), "unsupported");
+                assert_eq!(
+                    e.to_string(),
+                    "IPv6 ICMP is not yet supported on this platform"
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(require_ipv4(&"127.0.0.1:0".parse().unwrap()).is_ok());
+    }
 
     #[test]
     fn next_identifier_never_repeats_within_a_process() {

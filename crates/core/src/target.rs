@@ -417,20 +417,13 @@ mod tests {
 
     #[test]
     fn total_length_253_passes_and_254_fails() {
-        // Four labels of 63 plus three dots = 255; trim to exact lengths.
-        let name = |len: usize| {
-            let full = [label(63), label(63), label(63), label(63)].join(".");
-            let mut s = full[..len].to_string();
-            if s.ends_with('.') {
-                s.pop();
-                s.push('a');
-            }
-            s
-        };
-        assert_eq!(name(253).len(), 253);
-        ok(&name(253));
-        ok(&format!("{}.", name(253))); // trailing dot does not count
-        let msg = err(&name(254));
+        // 3 × 63 + 61 + 3 dots = 253; one more letter = 254.
+        let n253 = format!("{0}.{0}.{0}.{1}", label(63), label(61));
+        let n254 = format!("{0}.{0}.{0}.{1}", label(63), label(62));
+        assert_eq!((n253.len(), n254.len()), (253, 254));
+        ok(&n253);
+        ok(&format!("{n253}.")); // the trailing dot does not count
+        let msg = err(&n254);
         assert!(
             msg.contains("254 characters long; the limit is 253"),
             "{msg}"
@@ -453,6 +446,15 @@ mod tests {
         assert!(err("google..com").contains("empty label"));
         assert!(err(".google.com").contains("empty label"));
         assert!(err(".").contains("empty label"));
+    }
+
+    /// Not IP literals, but valid hostname syntax: they go to DNS, which decides (and fails
+    /// with `dns_resolution` for `999.1.1.1`). Pinned so a refactor changes it on purpose.
+    #[test]
+    fn numeric_looking_names_are_hostnames() {
+        assert_eq!(ok("999.1.1.1"), Target::Host("999.1.1.1".into()));
+        assert_eq!(ok("1.2.3"), Target::Host("1.2.3".into()));
+        assert!(err("fe80::1%").contains("numeric interface index"));
     }
 
     #[test]

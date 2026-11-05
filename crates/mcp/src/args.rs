@@ -382,7 +382,7 @@ mod tests {
             );
         }
         let text = parse_err::<PingArgs>(serde_json::json!({ "target": "x", "ip_version": "v5" }));
-        assert!(text.contains("ip_version") || text.contains("v5"), "{text}");
+        assert!(text.contains("unknown variant `v5`"), "{text}");
     }
 
     #[test]

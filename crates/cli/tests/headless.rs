@@ -235,6 +235,13 @@ fn cli_ip_literal_of_the_other_family_exits_2() {
 }
 
 #[test]
+fn cli_mock_v4_reports_ip_version_v4() {
+    let o = intqual(&["-c", "1", "--json", "--mock", "-4", "--interval", "10"]);
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(json(&o)["ip_version"], "v4");
+}
+
+#[test]
 fn cli_mock_v6_reports_ip_version_v6() {
     let o = intqual(&["-c", "1", "--json", "--mock", "-6", "--interval", "10"]);
     assert_eq!(o.status.code(), Some(0));
@@ -242,7 +249,8 @@ fn cli_mock_v6_reports_ip_version_v6() {
 }
 
 /// H3: ICMPv6 to `::1` through the ICMPv6 Helper API, no admin. TCP to `::1:443` normally
-/// fails (nothing listens), so the ICMP reply alone gives exit 0.
+/// fails (nothing listens), so the ICMP reply alone gives exit 0. Needs the Windows IPv6 stack
+/// (on by default).
 #[cfg(windows)]
 #[test]
 fn cli_ipv6_loopback_ping_succeeds_on_windows() {
