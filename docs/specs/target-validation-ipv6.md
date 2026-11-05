@@ -1,6 +1,6 @@
 # Spec: target validation and IPv6
 
-Status: approved 2026-11-05 (the user delegated the decisions). Roadmap items H1–H5.
+Status: done 2026-11-05 (commits `fa40b5e`, `6ea70f8`). Roadmap items H1–H5.
 
 ## Problem
 
@@ -137,7 +137,24 @@ OS. This code is not compiled on Windows: say so, and let CI check it.
 
 ## Done when
 
-- [ ] H1–H5 are fixed, and each MCP test case from the roadmap gives the expected new result.
-- [ ] `::1` ping and traceroute work on Windows without admin.
-- [ ] The fmt, build, test and clippy checks pass, and the test review has run.
-- [ ] The roadmap is updated with status `done` and the commit.
+- [x] H1–H5 are fixed, and each MCP test case from the roadmap gives the expected new result.
+- [x] `::1` ping and traceroute work on Windows without admin.
+- [x] The fmt, build, test and clippy checks pass, and the test review has run.
+- [x] The roadmap is updated with status `done` and the commit.
+
+## Implementation notes (deviations)
+
+- `pick_address` takes `&[SocketAddr]` (keeps the IPv6 scope id) and an `auto_allows_ipv6`
+  flag. On Unix, where ICMPv6 is not written yet, `auto` keeps preferring IPv4, so a
+  dual-stack host does not turn every ICMP sample into `unsupported`. On Windows `auto` is
+  the first address in OS order, as specified.
+- `Target::Ip` carries a `scope_id`. Zone ids must be numeric (`fe80::1%12`) on every OS.
+- `InvalidRequest` now displays its message without the "Invalid request:" prefix (H5); the
+  three new variants do the same. Clients match on `kind`.
+- With `--mock`, `ip_version: v6` reports `2001:db8::1`; the mock traceroute keeps its IPv4
+  hops.
+- The Unix TUI traceroute worker (sudo child) does not get `-4`/`-6` passed on; it resolves
+  with `auto`. Unix IPv6 is deferred anyway.
+- Windows: synchronous `Icmp6SendEcho2` (no event, no APC), source `::`, then
+  `Icmp6ParseReplies`; ping/traceroute error types use ICMPv6 numbers (unreachable 1,
+  time exceeded 3).

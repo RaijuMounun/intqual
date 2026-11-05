@@ -13,11 +13,11 @@ Spec: `docs/specs/target-validation-ipv6.md`.
 
 | # | Status | Item |
 | :- | :- | :- |
-| H1 | spec | Empty target (`""`) is accepted and pings the local machine (resolves to the host's own address). Must be rejected. |
-| H2 | spec | Targets are not validated: `"  google.com  "`, `https://google.com`, `google.com; whoami` and 300-character names all reach DNS and fail as `dns_resolution`. Validate and normalise the target once, in core, for TUI, headless and MCP. |
-| H3 | spec | IPv6 is not supported. `::1` fails with a `socket` error on every sample; on a dual-stack network a hostname can resolve to IPv6 and ICMP then fails while TCP works. Add ICMPv6 on Windows (`Icmp6CreateFile` / `Icmp6SendEcho2`, no admin) for ping and traceroute, and `-4` / `-6` address-family selection. Assessment §4 item 4, §5 item 7. |
-| H4 | spec | The traceroute 60 s budget error says "use a smaller count, interval or timeout"; traceroute has no count or interval. It should name `max_hops` and `timeout_ms`. |
-| H5 | spec | Argument errors read "Invalid request: invalid arguments: …" (double prefix). |
+| H1 | done (`fa40b5e`, `6ea70f8`) | Empty target (`""`) is accepted and pings the local machine (resolves to the host's own address). Must be rejected. |
+| H2 | done (`fa40b5e`, `6ea70f8`) | Targets are not validated: `"  google.com  "`, `https://google.com`, `google.com; whoami` and 300-character names all reach DNS and fail as `dns_resolution`. Validate and normalise the target once, in core, for TUI, headless and MCP. |
+| H3 | done (`fa40b5e`, `6ea70f8`) | IPv6 is not supported. `::1` fails with a `socket` error on every sample; on a dual-stack network a hostname can resolve to IPv6 and ICMP then fails while TCP works. Add ICMPv6 on Windows (`Icmp6CreateFile` / `Icmp6SendEcho2`, no admin) for ping and traceroute, and `-4` / `-6` address-family selection. Assessment §4 item 4, §5 item 7. |
+| H4 | done (`fa40b5e`, `6ea70f8`) | The traceroute 60 s budget error says "use a smaller count, interval or timeout"; traceroute has no count or interval. It should name `max_hops` and `timeout_ms`. |
+| H5 | done (`fa40b5e`, `6ea70f8`) | Argument errors read "Invalid request: invalid arguments: …" (double prefix). |
 
 Notes, not bugs:
 
@@ -47,6 +47,7 @@ work so far. First step is a review spec covering everything below.
 - Remaining tech debt in `docs/assessment.md` §5 (items 5, 6, 8, 10–14).
 - `CoreEngine` and `main.rs` still take the ICMP identifier from the clock; move them to
   `network::icmp::next_identifier()` like `measure`.
-- Unix IPv6 (ICMPv6 sockets): deferred, Windows first. Until then Unix returns a clear
-  "IPv6 not supported on this platform" error.
+- Unix IPv6 (ICMPv6 sockets): deferred, Windows first. Until then Unix returns
+  `unsupported` ("IPv6 ICMP is not yet supported on this platform"). Also pass `-4`/`-6` to
+  the Unix traceroute worker then.
 - Publish the MCP server to an MCP registry (`server.json`) once the tools are stable.
