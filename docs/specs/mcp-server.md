@@ -105,7 +105,14 @@ it on progress). The server keeps every call short and bounded on its own:
   (from the headless deadline) is at most 20 × 5 + 11 = 111 s with extreme arguments, so the
   server also rejects any request whose computed bound is over 60 s (exactly 60 s is
   accepted). Traceroute: `max_hops × 3 × timeout` must be ≤ 60 s (defaults: 30 × 3 × 0.5 s = 45 s). Rejected requests
-  get an `invalid_request` tool error that states the bound, so the model can retry smaller.
+  get an `invalid_request` tool error that states the bound and names the arguments to shrink
+  (`count`, `interval_ms`, `timeout_ms` for the latency tools; `max_hops`, `timeout_ms` for
+  traceroute), so the model can retry smaller.
+- **Traceroute ignores `count`.** Its report still carries `count: 1` (and the default
+  `interval_ms`) so the JSON shape stays the same for every tool (`schema_version: 1`).
+- **`ip_version`** (`"auto"` default, `"v4"`, `"v6"`) on every tool picks the address family;
+  one address is used for the whole call and the report names it in `ip_version`
+  (spec `target-validation-ipv6.md`).
 - **One measurement at a time.** A `tokio::sync::Semaphore(1)` in the server: parallel calls
   queue instead of overlapping. Overlapping ICMP streams would distort each other's RTTs, and it
   stops an agent from flooding the network with parallel calls. Waiting in the queue counts
@@ -128,7 +135,8 @@ Two kinds of failure, as the MCP spec defines them:
 
 - **Tool execution errors** → a result with `isError: true` and one text block holding
   `{"kind": "...", "message": "..."}` (same shape as in the report). Used when `measure` returns
-  `Err` (`invalid_request`, `dns_resolution`, including "no address found"), for the MCP
+  `Err` (`invalid_request`, `invalid_target`, `no_address_for_family`, `dns_resolution`,
+  including "no address found"), for the MCP
   limit checks above, and for arguments that do not deserialize (wrong type, missing `target`:
   `invalid_request`). Unknown argument names (a typo such as `cout`) are rejected the same way instead of silently using the default, and numbers outside the field type (`max_hops: 300`) get the bound-naming message. MCP 2025-11-25 makes input errors tool errors so the model can correct
   itself; the handlers deserialize the arguments themselves to keep this one shape (rmcp 3.8

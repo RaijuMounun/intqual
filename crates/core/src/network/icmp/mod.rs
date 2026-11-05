@@ -28,6 +28,26 @@ pub type DefaultIcmpProvider = windows::IcmpApiProvider;
 #[cfg(target_os = "windows")]
 pub type TracerouteIcmpProvider = windows::IcmpApiProvider;
 
+/// Whether this platform's ICMP providers handle IPv6 targets. Windows uses the ICMPv6 Helper
+/// API; Unix ICMPv6 sockets are not written yet, so there a v6 target is `unsupported`.
+pub const ICMPV6_SUPPORTED: bool = cfg!(target_os = "windows");
+
+/// The error a provider without ICMPv6 returns for an IPv6 target, instead of a socket error.
+/// Used by the Unix providers; built on every OS so its test runs on Windows too.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn require_ipv4(target: &std::net::SocketAddr) -> Result<(), crate::models::ProbeError> {
+    if target.is_ipv4() {
+        return Ok(());
+    }
+    tracing::error!(
+        "ICMP to IPv6 target {} is not supported on this platform",
+        target.ip()
+    );
+    Err(crate::models::ProbeError::Unsupported(
+        "IPv6 ICMP is not yet supported on this platform".to_string(),
+    ))
+}
+
 static NEXT_IDENTIFIER: AtomicU16 = AtomicU16::new(0);
 
 /// A fresh ICMP echo identifier for one probe. Raw sockets on Unix see every ICMP reply on
@@ -42,6 +62,22 @@ pub fn next_identifier() -> u16 {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn require_ipv4_rejects_ipv6_with_unsupported() {
+        let v6: std::net::SocketAddr = "[::1]:0".parse().unwrap();
+        match require_ipv4(&v6) {
+            Err(e @ crate::models::ProbeError::Unsupported(_)) => {
+                assert_eq!(e.kind(), "unsupported");
+                assert_eq!(
+                    e.to_string(),
+                    "IPv6 ICMP is not yet supported on this platform"
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(require_ipv4(&"127.0.0.1:0".parse().unwrap()).is_ok());
+    }
 
     #[test]
     fn next_identifier_never_repeats_within_a_process() {

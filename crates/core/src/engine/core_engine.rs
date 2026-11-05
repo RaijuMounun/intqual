@@ -1,5 +1,6 @@
 use crate::models::ProbeError;
 use crate::probe::{NetworkProbe, TelemetryEvent, ping::PingProbe, tcp::TcpProbe};
+use crate::target::IpVersion;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,6 +21,7 @@ pub struct CoreEngine {
     pub target_port: u16,
     pub interval: Duration,
     pub timeout: Duration,
+    pub ip_version: IpVersion,
 }
 
 impl CoreEngine {
@@ -29,7 +31,14 @@ impl CoreEngine {
             target_port,
             interval: Duration::from_millis(interval_ms),
             timeout: Duration::from_millis(timeout_ms),
+            ip_version: IpVersion::Auto,
         }
+    }
+
+    /// `-4` / `-6`: the address family to resolve the target to.
+    pub fn with_ip_version(mut self, ip_version: IpVersion) -> Self {
+        self.ip_version = ip_version;
+        self
     }
 }
 
@@ -39,58 +48,22 @@ impl super::NetworkEngine for CoreEngine {
         tx: mpsc::Sender<TelemetryEvent>,
         mut cmd_rx: mpsc::Receiver<EngineCommand>,
     ) {
-        let addr_string = format!("{}:{}", self.target_ip, self.target_port);
-        let resolved_addr: SocketAddr = match tokio::net::lookup_host(&addr_string).await {
-            Ok(addrs) => {
-                if let Some(addr) = crate::network::pick_address(addrs) {
-                    addr
-                } else {
-                    tracing::error!(
-                        "DNS resolution succeeded but returned zero IP addresses for the target."
-                    );
-                    let err =
-                        ProbeError::DnsResolution("No IP addresses found for host".to_string());
+        // Validates the target again (main.rs already did, before the alternate screen) so the
+        // engine never sends a malformed string to DNS. `resolve_str` logs its own failures.
+        let resolved_addr =
+            match crate::target::resolve_str(&self.target_ip, self.target_port, self.ip_version)
+                .await
+            {
+                Ok(addr) => addr,
+                Err(err) => {
                     if tx.send(TelemetryEvent::Fatal(err)).await.is_err() {
-                        tracing::error!("UI channel is dead. Unable to propagate fatal DNS error.");
+                        tracing::error!(
+                            "UI channel is dead. Unable to propagate the target error."
+                        );
                     }
                     return;
                 }
-            }
-            Err(e) => {
-                let probe_err = match e.kind() {
-                    std::io::ErrorKind::NotFound => {
-                        tracing::error!("Fatal Error: DNS Resolution Failed: Host not found");
-                        ProbeError::DnsResolution("Host not found".to_string())
-                    }
-                    std::io::ErrorKind::TimedOut => {
-                        tracing::error!(
-                            "Fatal Error: DNS Resolution Failed: DNS request timed out"
-                        );
-                        ProbeError::DnsResolution("DNS request timed out".to_string())
-                    }
-                    _ => {
-                        tracing::error!("Fatal Error: DNS Resolution Failed: {}", e);
-                        ProbeError::Socket(e)
-                    }
-                };
-                if let Err(send_err) = tx.try_send(TelemetryEvent::Fatal(probe_err)) {
-                    match send_err {
-                        tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                            tracing::warn!(
-                                "UI channel overloaded, dropping telemetry frame to prevent memory exhaustion"
-                            );
-                        }
-                        tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                            tracing::error!(
-                                "UI channel is dead. Shutting down due to DNS failure."
-                            );
-                            return;
-                        }
-                    }
-                }
-                return;
-            }
-        };
+            };
 
         let icmp_identifier = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(d) => (d.subsec_nanos() % 65535) as u16,
@@ -331,12 +304,39 @@ async fn reverse_dns(ip: &str) -> Option<String> {
         .flatten()
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::NetworkEngine;
 
+    /// The first event of an engine that could not start.
+    async fn fatal_of(engine: CoreEngine) -> ProbeError {
+        let (tx, mut rx) = mpsc::channel(100);
+        let (_cmd_tx, cmd_rx) = mpsc::channel(10);
+        engine.start(tx, cmd_rx).await;
+        match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+            Ok(Some(TelemetryEvent::Fatal(e))) => e,
+            other => panic!("expected a Fatal event, got {other:?}"),
+        }
+    }
+
+    /// The TUI's second guard: the engine validates the target too, before DNS.
+    #[tokio::test]
+    async fn bad_target_sends_fatal_invalid_target() {
+        let e = fatal_of(CoreEngine::new("https://x.com".into(), 443, 500, 500)).await;
+        assert!(matches!(e, ProbeError::InvalidTarget(_)), "{e:?}");
+    }
+
+    #[tokio::test]
+    async fn ip_version_reaches_resolution() {
+        let engine =
+            CoreEngine::new("127.0.0.1".into(), 443, 500, 500).with_ip_version(IpVersion::V6);
+        let e = fatal_of(engine).await;
+        assert!(matches!(e, ProbeError::NoAddressForFamily(_)), "{e:?}");
+    }
+
     /// Loopback only and no admin: the ICMP Helper API answers 127.0.0.1 in-process.
+    #[cfg(windows)]
     #[tokio::test]
     async fn traceroute_to_loopback_runs_in_process() {
         let (tx, mut rx) = mpsc::channel(100);

@@ -37,16 +37,20 @@ pub(crate) fn classify_response(
         stop,
         icmp_error,
     };
+    // ICMPv6 numbers the same messages differently (RFC 4443): unreachable 1, time exceeded 3.
+    let (unreachable, exceeded) = if target.is_ipv6() { (1, 3) } else { (3, 11) };
     match response {
         IcmpResponse::EchoReply(_) => verdict(true, true, None),
         IcmpResponse::TimeExceeded(t) if t.code == 0 => verdict(false, false, None),
-        IcmpResponse::TimeExceeded(t) => {
-            verdict(false, false, Some(format!("Type: 11, Code: {}", t.code)))
-        }
+        IcmpResponse::TimeExceeded(t) => verdict(
+            false,
+            false,
+            Some(format!("Type: {exceeded}, Code: {}", t.code)),
+        ),
         IcmpResponse::DestinationUnreachable(d) => verdict(
             responder == target,
             true,
-            Some(format!("Type: 3, Code: {}", d.code)),
+            Some(format!("Type: {unreachable}, Code: {}", d.code)),
         ),
         IcmpResponse::Unknown { type_, code } => verdict(
             false,
@@ -296,6 +300,25 @@ mod tests {
         assert_eq!(
             classify_response(&unreachable(3), TARGET, TARGET),
             verdict(true, true, Some("Type: 3, Code: 3"))
+        );
+    }
+
+    /// ICMPv6 numbers unreachable as type 1 and time exceeded as type 3 (RFC 4443).
+    #[test]
+    fn classify_uses_icmpv6_type_numbers_for_an_ipv6_target() {
+        let target: IpAddr = "2001:db8::1".parse().unwrap();
+        let router: IpAddr = "2001:db8::fe".parse().unwrap();
+        assert_eq!(
+            classify_response(&unreachable(4), target, target),
+            verdict(true, true, Some("Type: 1, Code: 4"))
+        );
+        assert_eq!(
+            classify_response(&time_exceeded(1), router, target),
+            verdict(false, false, Some("Type: 3, Code: 1"))
+        );
+        assert_eq!(
+            classify_response(&time_exceeded(0), router, target),
+            verdict(false, false, None)
         );
     }
 

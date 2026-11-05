@@ -28,6 +28,7 @@ impl IcmpProvider for UnixDgramIcmp {
         seq: u16,
         timeout: Duration,
     ) -> Result<f64, ProbeError> {
+        super::require_ipv4(target)?;
         let icmp_start = Instant::now();
 
         let socket = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4)) {
@@ -121,6 +122,7 @@ impl IcmpProvider for UnixDgramIcmp {
         ttl: u32,
         timeout: Duration,
     ) -> Result<TracerouteHopResult, ProbeError> {
+        super::require_ipv4(target)?;
         let icmp_start = Instant::now();
 
         let socket = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4)) {

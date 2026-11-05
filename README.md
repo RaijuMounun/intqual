@@ -95,6 +95,8 @@ Options:
   -p, --port <PORT>          The target port for TCP measurements [default: 443]
   -i, --interval <INTERVAL>  Polling interval in milliseconds [default: 500]
   -t, --timeout <TIMEOUT>    Connection timeout threshold in ms [default: 1000]
+  -4, --ipv4                 Use the target's IPv4 address only
+  -6, --ipv6                 Use the target's IPv6 address only (ICMPv6 on Windows)
   -h, --help                 Print help
   -V, --version              Print version
 ```
@@ -116,7 +118,13 @@ Then ask, for example, "ping google.com with intqual" or "check TCP latency to g
 port 443". Add `--mock` (`intqual mcp --mock`) for simulated data with no network traffic.
 Calls run one at a time and each is limited to 60 seconds. Logs go to stderr (level from
 `RUST_LOG`, default `warn`). On Linux/macOS the traceroute tool needs root and otherwise reports
-`permission_denied`. To analyze a host literally named `mcp`, write `intqual -- mcp`.
+`permission_denied`. Every tool takes an optional `ip_version` (`"auto"`, `"v4"`, `"v6"`).
+To analyze a host literally named `mcp`, write `intqual -- mcp`.
+
+The target must be a hostname or an IP address (`google.com`, `1.1.1.1`, `::1`, `[::1]`).
+URLs, `host:port` and names with spaces or shell characters are rejected with error kind
+`invalid_target` before any DNS lookup (exit code 2 on the CLI). IPv6 ping and traceroute
+work on Windows without admin; on Linux/macOS they report `unsupported` for now.
 
 ---
 

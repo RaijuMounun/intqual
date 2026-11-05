@@ -197,6 +197,7 @@ mod tests {
             schema_version: SCHEMA_VERSION,
             target: "example.test".to_string(),
             resolved_ip: "192.0.2.1".to_string(),
+            ip_version: intqual_core::IpFamily::V4,
             port: 443,
             count: 3,
             interval_ms: 500,
@@ -362,6 +363,7 @@ traceroute error: permission_denied: Permission Denied / Unsupported
     fn invalid_req() -> MeasureRequest {
         MeasureRequest {
             target: "example.test".to_string(),
+            ip_version: intqual_core::IpVersion::Auto,
             port: 443,
             count: 0,
             interval: std::time::Duration::from_millis(10),

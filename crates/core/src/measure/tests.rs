@@ -16,6 +16,7 @@ fn fixed_clock() -> Result<u64, ProbeError> {
 fn req(count: u32) -> MeasureRequest {
     MeasureRequest {
         target: "example.test".to_string(),
+        ip_version: IpVersion::Auto,
         port: 443,
         count,
         interval: Duration::from_millis(100),
@@ -141,6 +142,77 @@ async fn measure_invalid_request_returns_err_without_probing() {
     let result = run_mock(&req(0), CancellationToken::new(), None).await;
     assert!(matches!(result, Err(ProbeError::InvalidRequest(_))));
     assert_eq!(start.elapsed(), Duration::ZERO);
+}
+
+/// H1/H2: the target is validated before the clock, DNS or any probe, also with `--mock`.
+#[tokio::test(start_paused = true)]
+async fn measure_invalid_target_returns_err_without_probing() {
+    for target in [
+        "",
+        "  ",
+        "https://google.com",
+        "google.com; whoami",
+        "a:443",
+    ] {
+        let start = Instant::now();
+        let r = MeasureRequest {
+            target: target.to_string(),
+            ..req(1)
+        };
+        let result = run_mock(&r, CancellationToken::new(), None).await;
+        assert!(
+            matches!(result, Err(ProbeError::InvalidTarget(_))),
+            "{target:?}: {result:?}"
+        );
+        assert_eq!(start.elapsed(), Duration::ZERO);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_reports_the_normalised_target_and_family() {
+    let r = MeasureRequest {
+        target: "  example.test  ".to_string(),
+        ..req(1)
+    };
+    let report = run_mock(&r, CancellationToken::new(), None).await.unwrap();
+    assert_eq!(report.target, "example.test");
+    assert_eq!(report.ip_version, IpFamily::V4);
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["ip_version"], "v4");
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_mock_honours_ip_version() {
+    let v6 = MeasureRequest {
+        ip_version: IpVersion::V6,
+        ..req(1)
+    };
+    let report = run_mock(&v6, CancellationToken::new(), None).await.unwrap();
+    assert_eq!(report.ip_version, IpFamily::V6);
+    assert_eq!(report.resolved_ip, "2001:db8::1");
+
+    let v4 = MeasureRequest {
+        ip_version: IpVersion::V4,
+        ..req(1)
+    };
+    let report = run_mock(&v4, CancellationToken::new(), None).await.unwrap();
+    assert_eq!(report.resolved_ip, "192.0.2.1");
+}
+
+#[tokio::test(start_paused = true)]
+async fn measure_ip_literal_of_the_other_family_is_no_address_for_family() {
+    for (target, version) in [("127.0.0.1", IpVersion::V6), ("[::1]", IpVersion::V4)] {
+        let r = MeasureRequest {
+            target: target.to_string(),
+            ip_version: version,
+            ..req(1)
+        };
+        let result = run_mock(&r, CancellationToken::new(), None).await;
+        assert!(
+            matches!(result, Err(ProbeError::NoAddressForFamily(_))),
+            "{target}: {result:?}"
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -440,8 +512,12 @@ fn hop(n: u8) -> TracerouteHop {
 }
 
 impl Sources for TestSources {
-    async fn resolve(&self, req: &MeasureRequest) -> Result<SocketAddr, ProbeError> {
-        self.mock.resolve(req).await
+    async fn resolve(
+        &self,
+        target: &Target,
+        req: &MeasureRequest,
+    ) -> Result<SocketAddr, ProbeError> {
+        self.mock.resolve(target, req).await
     }
 
     fn start_latency(

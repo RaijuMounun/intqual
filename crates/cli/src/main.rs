@@ -42,6 +42,15 @@ struct Cli {
     #[arg(short = 't', long, default_value_t = 1000)]
     timeout: u64,
 
+    /// Use IPv4 only: measure the target's first IPv4 address.
+    #[arg(short = '4', long = "ipv4", conflicts_with = "ipv6")]
+    ipv4: bool,
+
+    /// Use IPv6 only: measure the target's first IPv6 address. ICMPv6 works on Windows;
+    /// on Linux/macOS ping and traceroute report `unsupported` for now (TCP works).
+    #[arg(short = '6', long = "ipv6")]
+    ipv6: bool,
+
     /// Use the mock engine (simulates network without real packets)
     #[arg(long)]
     mock: bool,
@@ -79,6 +88,17 @@ enum Command {
         #[arg(long)]
         mock: bool,
     },
+}
+
+impl Cli {
+    /// `-4` / `-6`, or the OS order when neither is given.
+    fn ip_version(&self) -> intqual_core::IpVersion {
+        match (self.ipv4, self.ipv6) {
+            (true, _) => intqual_core::IpVersion::V4,
+            (_, true) => intqual_core::IpVersion::V6,
+            _ => intqual_core::IpVersion::Auto,
+        }
+    }
 }
 
 /// `intqual mcp`. stdout is the JSON-RPC stream, so logs go to stderr (hosts collect it into
@@ -135,18 +155,18 @@ async fn main() -> Result<(), ()> {
     if let Some(mode) = &cli.worker_mode
         && mode == "traceroute"
     {
-        let addr_string = format!("{}:{}", cli.target, cli.port);
         // The parent reads stderr when the worker exits non-zero, so every failure
-        // must be printed there, not only logged.
-        let resolved_addr = match tokio::net::lookup_host(&addr_string).await {
-            Ok(addrs) => intqual_core::pick_address(addrs).unwrap_or_else(|| {
-                tracing::error!("Worker DNS error: no addresses found");
-                eprintln!("DNS error: no addresses found for {}", cli.target);
-                std::process::exit(1);
-            }),
+        // must be printed there, not only logged. `resolve_str` logs it.
+        let resolved_addr = match intqual_core::target::resolve_str(
+            &cli.target,
+            cli.port,
+            cli.ip_version(),
+        )
+        .await
+        {
+            Ok(addr) => addr,
             Err(e) => {
-                tracing::error!("Worker DNS error: {}", e);
-                eprintln!("DNS error: {}", e);
+                eprintln!("{e}");
                 std::process::exit(1);
             }
         };
@@ -210,6 +230,7 @@ async fn main() -> Result<(), ()> {
     // alternate screen, and stdout carries only the result.
     if let Some(count) = cli.count {
         let req = intqual_core::measure::MeasureRequest {
+            ip_version: cli.ip_version(),
             target: cli.target,
             port: cli.port,
             count,
@@ -231,6 +252,17 @@ async fn main() -> Result<(), ()> {
         std::process::exit(code);
     }
 
+    // A bad target fails here, before the engine starts and the alternate screen opens, with
+    // the same message and exit code (2) as headless mode.
+    if !cli.mock
+        && let Err(e) = intqual_core::parse_target(&cli.target)
+    {
+        tracing::error!("Rejected target {:?}: {}", cli.target, e);
+        eprintln!("intqual: {e}");
+        drop(log_guard);
+        std::process::exit(2);
+    }
+
     // 2. Establish the telemetry pipeline.
     let (tx, rx) = mpsc::channel(100);
     let (cmd_tx, cmd_rx) = mpsc::channel::<intqual_core::engine::core_engine::EngineCommand>(10);
@@ -241,8 +273,10 @@ async fn main() -> Result<(), ()> {
         let engine = intqual_core::engine::MockEngine::default();
         engine.start(tx.clone(), cmd_rx).await;
     } else {
+        let ip_version = cli.ip_version();
         let engine =
-            intqual_core::engine::CoreEngine::new(cli.target, cli.port, cli.interval, cli.timeout);
+            intqual_core::engine::CoreEngine::new(cli.target, cli.port, cli.interval, cli.timeout)
+                .with_ip_version(ip_version);
         engine.start(tx.clone(), cmd_rx).await;
     }
 

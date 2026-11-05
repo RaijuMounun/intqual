@@ -3,6 +3,7 @@
 //! together with `SCHEMA_VERSION`.
 
 use crate::models::{ProbeError, TracerouteHop};
+use crate::target::IpFamily;
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any breaking change to the JSON shape below.
@@ -35,6 +36,8 @@ pub struct MeasureReport {
     pub schema_version: u32,
     pub target: String,
     pub resolved_ip: String,
+    /// Family of `resolved_ip`. Added in schema 1 (a new field is a compatible change).
+    pub ip_version: IpFamily,
     pub port: u16,
     pub count: u32,
     pub interval_ms: u64,
@@ -194,6 +197,7 @@ mod tests {
             schema_version: SCHEMA_VERSION,
             target: "example.test".to_string(),
             resolved_ip: "192.0.2.1".to_string(),
+            ip_version: IpFamily::V4,
             port: 443,
             count: 2,
             interval_ms: 500,
@@ -238,6 +242,7 @@ mod tests {
             "schema_version": 1,
             "target": "example.test",
             "resolved_ip": "192.0.2.1",
+            "ip_version": "v4",
             "port": 443,
             "count": 2, "interval_ms": 500, "timeout_ms": 1000,
             "source": "mock",
@@ -295,6 +300,7 @@ mod tests {
             "schema_version": 1,
             "target": "example.test",
             "resolved_ip": "192.0.2.1",
+            "ip_version": "v4",
             "port": 443,
             "count": 2, "interval_ms": 500, "timeout_ms": 1000,
             "source": "mock",

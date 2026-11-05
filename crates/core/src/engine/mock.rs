@@ -2,7 +2,7 @@ use super::NetworkEngine;
 use super::core_engine::EngineCommand;
 use crate::models::{ProbeError, TracerouteHop};
 use crate::probe::TelemetryEvent;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -11,6 +11,9 @@ const MOCK_TARGET: &str = "mock.local";
 
 /// TEST-NET-1 (RFC 5737): never routed, so mock output can never be mistaken for a real host.
 pub(crate) const MOCK_IP: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+/// The IPv6 documentation prefix (RFC 3849), for `ip_version: v6` with `--mock`. The mock
+/// traceroute keeps its IPv4 hops: it is simulated either way.
+pub(crate) const MOCK_IP6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
 
 /// The mock traceroute, shared by `MockEngine` and `measure`'s `Source::Mock`:
 /// `(ip, hostname, rtt_ms)`; the last hop is `MOCK_IP`, the destination.

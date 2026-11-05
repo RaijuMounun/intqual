@@ -28,6 +28,7 @@ impl IcmpProvider for RawIcmpProvider {
         seq: u16,
         timeout: Duration,
     ) -> Result<f64, ProbeError> {
+        super::require_ipv4(target)?;
         let icmp_start = Instant::now();
 
         let socket = match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {
@@ -134,6 +135,7 @@ impl IcmpProvider for RawIcmpProvider {
         ttl: u32,
         timeout: Duration,
     ) -> Result<TracerouteHopResult, ProbeError> {
+        super::require_ipv4(target)?;
         let icmp_start = Instant::now();
 
         let socket = match Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4)) {

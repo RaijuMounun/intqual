@@ -28,8 +28,24 @@ pub enum ProbeError {
     IpcError(String),
     /// A `MeasureRequest` outside the accepted bounds. Shared by the headless CLI (exit 2)
     /// and the MCP server, so both reject the same inputs with the same message.
-    #[error("Invalid request: {0}")]
+    ///
+    /// The message is shown as is: it already says what is wrong, and a "Invalid request:"
+    /// prefix stacked on the MCP argument errors ("Invalid request: invalid arguments: ...").
+    #[error("{0}")]
     InvalidRequest(String),
+    /// A target that is not a hostname or IP address (empty, a URL, `host:port`, shell
+    /// characters...). Rejected by `target::parse_target` before any DNS lookup; the message
+    /// names the problem and, where it can, the fix.
+    #[error("{0}")]
+    InvalidTarget(String),
+    /// The target has no address of the family asked for with `-4`/`-6` or `ip_version`
+    /// ("google.com has no IPv6 address"), or is an IP literal of the other family.
+    #[error("{0}")]
+    NoAddressForFamily(String),
+    /// Something this platform cannot do yet, such as ICMPv6 on Unix. Distinct from
+    /// `socket` so a caller does not retry or blame the network.
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 impl ProbeError {
@@ -51,6 +67,9 @@ impl ProbeError {
             Self::PacketError(_) => "packet_error",
             Self::IpcError(_) => "ipc_error",
             Self::InvalidRequest(_) => "invalid_request",
+            Self::InvalidTarget(_) => "invalid_target",
+            Self::NoAddressForFamily(_) => "no_address_for_family",
+            Self::Unsupported(_) => "unsupported",
         }
     }
 }
@@ -144,13 +163,19 @@ mod tests {
             (ProbeError::PacketError("x".into()), "packet_error"),
             (ProbeError::IpcError("x".into()), "ipc_error"),
             (ProbeError::InvalidRequest("x".into()), "invalid_request"),
+            (ProbeError::InvalidTarget("x".into()), "invalid_target"),
+            (
+                ProbeError::NoAddressForFamily("x".into()),
+                "no_address_for_family",
+            ),
+            (ProbeError::Unsupported("x".into()), "unsupported"),
         ]
     }
 
     #[test]
     fn probe_error_kind_names_every_variant() {
         let variants = all_variants();
-        assert_eq!(variants.len(), 13);
+        assert_eq!(variants.len(), 16);
         for (err, expected) in &variants {
             assert_eq!(err.kind(), *expected, "wrong kind for {err:?}");
         }
@@ -160,7 +185,7 @@ mod tests {
     fn probe_error_kind_names_are_unique_snake_case() {
         let names: Vec<&str> = all_variants().iter().map(|(e, _)| e.kind()).collect();
         let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
-        assert_eq!(unique.len(), 13, "duplicate kind names: {names:?}");
+        assert_eq!(unique.len(), 16, "duplicate kind names: {names:?}");
         for name in &names {
             assert!(
                 !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
